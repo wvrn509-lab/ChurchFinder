@@ -97,11 +97,11 @@
   (FC-1, FC-2, FC-3, FC-4), before any non-featured/live results (which stay sorted
   by distance). This was a deliberate request — don't revert to pure distance sort.
 
-  ===== GATEWAY / ROUTING (IC-1, LP-1, TP-1, PI-1, DN-1, QZ-1, AU-1, VF-1, AC-1) =====
-  The whole page is now gated. Eleven top-level "views" are controlled by ONE
+  ===== GATEWAY / ROUTING (IC-1, LP-1, TP-1, PI-1, DN-1, QZ-1, AU-1, VF-1, AC-1, AD-1) =====
+  The whole page is now gated. Twelve top-level "views" are controlled by ONE
   function, setView(view): 'welcome' (IC-1) | 'landing' | 'search' | 'tiers' |
   'pastor' (PI-1) | 'chat' (CV-1) | 'donate' | 'quiz' | 'auth' (AU-1) |
-  'verify' (VF-1) | 'account' (AC-1) | 'detail'.
+  'verify' (VF-1) | 'account' (AC-1) | 'admin' (AD-1) | 'detail'.
   The three account views are documented in ACCOUNTS & AUTH below, including
   which routes now require a signed-in account. The rest:
     - 'welcome' (id IC-1, #icWrap): the TRUE default/entry view now — DEFAULT when
@@ -417,6 +417,38 @@
   containsBadWords() (the same good-faith IC-1 filter — word-boundary based, so
   it catches "shit" but not "bullshit"; pre-existing limitation, not new here).
 
+  ===== ADMIN MODE (AD-1) =====
+  A SEPARATE, much simpler gate from the AU-1/VF-1/AC-1 account system above — no
+  email, no verification, no account record, nothing added to STORE_KEYS. Its only
+  job is to reveal the internal page-ID / church-ID chips (#pageIdFixed, .pew-id)
+  that are hidden from visitors by default (CSS: both are display:none unless
+  <body> carries class admin-on). Reachable ONLY by typing #admin — nothing in the
+  UI links here, and it doesn't appear in the acct-pill or on LP-1.
+  State lives in TAB_STORE (the same generic per-tab sessionStorage wrapper the
+  real session uses) under its own key, cf.admin.v1 — so it's per-tab like a real
+  session, but it is NOT the account system: isAdminMode()/setAdminMode() are the
+  only two functions that touch that key, and neither one reads or writes
+  STORE_KEYS.accounts or goes through createAccount/currentAccount. Per-tab was a
+  deliberate ask (mirrors the existing session split — see PERSISTENCE above) so
+  one tab can stay signed in as admin while another tab is tested as a normal
+  visitor at the same time.
+  ADMIN_USERNAME / ADMIN_PASSWORD (search for them, just above isAdminMode()) are
+  plain constants checked entirely in this client-side file — anyone who views
+  source can read them. NOT REAL SECURITY, same honesty rule as the account
+  system's client-side password hashing above: this only keeps the dev IDs out of
+  a casual visitor's view, it does not protect anything sensitive. Change the two
+  constants for a different phrase; there's nothing else to configure.
+  When admin mode is on: <body> gets class admin-on (the CSS that reveals
+  #pageIdFixed and every .pew-id chip, on both SR-1 cards and the detail page),
+  and a small fixed "ADMIN MODE" marker (top-left, #adminMarker, click takes you
+  back to #admin) becomes the visible tell for which tab is which.
+  applyAdminVisual() is what syncs <body>'s class + the marker to TAB_STORE and
+  runs once on load and again on every setAdminMode() call — call it again if you
+  ever add another place that can flip admin state.
+  renderAdmin() draws a login form when signed out, or a status panel with a
+  "Sign out of admin" button when signed in — there's no other way off; closing
+  the tab clears it too, since it's sessionStorage.
+
   ===== KNOWN QUIRKS / DO NOT RE-BREAK =====
   - "Only 4 results, no warning text" = Overpass succeeded but OSM just doesn't have
     much tagged in that area (data sparsity), NOT a fetch/code failure — don't assume
@@ -442,6 +474,30 @@
     not hammered on every request.
 
   ===== CHANGE LOG (most recent first) =====
+  - ADDED ADMIN MODE (AD-1), per explicit request to hide the internal dev-ID
+    chips (#pageIdFixed bottom-left badge, .pew-id on both the SR-1 cards and the
+    detail page) from ordinary visitors while keeping them available on demand.
+    CSS now hides both by default and reveals them only when <body> carries
+    admin-on. A new hidden route, #admin (nothing in the UI links to it), gates
+    that class behind a username+password check — ADMIN_USERNAME/ADMIN_PASSWORD,
+    plain constants, deliberately NOT real security (same honesty framing as the
+    account system's client-side password hashing) — the point is hiding IDs from
+    casual visitors, not protecting anything sensitive. State is per-tab
+    (TAB_STORE, key cf.admin.v1) so one tab can stay admin while another is
+    tested as a normal visitor, mirroring why the real session is per-tab.
+    Deliberately kept SEPARATE from the AU-1/VF-1/AC-1 account system — no
+    account record, no STORE_KEYS entry, no verification step. A small fixed
+    "ADMIN MODE" marker (top-left) is the visible tell for which state a tab is
+    in. See dev note ADMIN MODE (AD-1) above for the full shape.
+  - ADDED PASSWORD STRENGTH RULES to createAccount(): 8+ characters (unchanged)
+    now also requires at least one letter AND one number, and the password is
+    checked case-insensitively against a short COMMON_PASSWORDS list (password1,
+    qwerty123, etc.) and rejected with an inline error on a match. Explicitly did
+    NOT add a check preventing two accounts from sharing a password — the entry
+    below ("NOT A BUG, checked explicitly: two accounts may share the same
+    password") already covers why: this app can't check that without storing
+    passwords readably, and that's still true. Don't add it later without solving
+    that first.
   - MADE ADDRESSES CLICKABLE MAPS LINKS, on both the search-results cards (SR-1)
     and the church detail page (the address subtitle AND the Address row in the
     field grid — there are two on that page, both now link). New helpers:
@@ -1380,6 +1436,7 @@
     padding:2px 6px;
     border-radius:5px;
     vertical-align:middle;
+    display:none; /* hidden from visitors — ADMIN MODE reveals it, see body.admin-on rule near .page-id-fixed */
   }
   .pew-denom{
     display:inline-block;
@@ -2228,6 +2285,34 @@
     border-radius:20px;
     pointer-events:none;
     box-shadow:0 2px 8px rgba(0,0,0,0.25);
+    display:none; /* hidden from visitors — ADMIN MODE reveals it, see rule below */
+  }
+  /* ADMIN MODE (AD-1): both the bottom-left page-id-fixed badge and every .pew-id
+     chip (search cards + detail page) are hidden by default and revealed only
+     when <body> carries admin-on — set by applyAdminVisual()/setAdminMode() after
+     a successful #admin sign-in. See dev note ADMIN MODE (AD-1). */
+  body.admin-on .page-id-fixed{ display:block; }
+  body.admin-on .pew-id{ display:inline; }
+  .admin-marker{
+    position:fixed;
+    top:14px;
+    left:16px;
+    z-index:9998;
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    height:28px;
+    padding:0 12px;
+    border-radius:20px;
+    cursor:pointer;
+    background:rgba(201,162,39,0.92);
+    color:var(--ink);
+    font-family:'Inter',sans-serif;
+    font-size:11px;
+    font-weight:700;
+    letter-spacing:0.05em;
+    text-transform:uppercase;
+    box-shadow:0 2px 8px rgba(0,0,0,0.25);
   }
 </style>
 </head>
@@ -2239,6 +2324,11 @@
      renderAcctPill(): signed out -> "Sign in" -> #signin; signed in -> the
      account's display name -> #account. -->
 <button class="acct-pill" id="acctPill" style="display:none;"></button>
+
+<!-- Admin-mode marker (top-left). Hidden by default; shown only after a
+     successful #admin sign-in, toggled by applyAdminVisual(). See dev note
+     ADMIN MODE (AD-1). Click takes you back to #admin (e.g. to sign out). -->
+<div class="admin-marker" id="adminMarker" style="display:none;">Admin mode</div>
 
 <!-- IC-1: Icebreaker capture — the TRUE entry point now, shown before LP-1. Two
      buttons: "Name" (free-text name field) or ":)" (one random multiple-choice fun
@@ -2487,6 +2577,27 @@
   <div class="gate-inner account-inner">
     <button class="back-link" id="accountBackBtn" style="padding-top:0;">&larr; Back</button>
     <div id="accountBody"></div>
+  </div>
+</div>
+
+<!-- AD-1: Admin mode. A separate, much simpler gate from AU-1/VF-1/AC-1 above —
+     no email, no verification, no account record. Its only job is revealing the
+     internal page-ID / church-ID chips normally hidden from visitors. Reachable
+     ONLY by typing #admin; nothing in the UI links here. Body is rendered by
+     renderAdmin() — a login form when signed out, a status panel + sign-out
+     button when signed in. See dev note ADMIN MODE (AD-1). -->
+<div class="gate-wrap" id="adminWrap" style="display:none;">
+  <svg class="rose gate-rose" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+    <g stroke="#EDEAE0" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M-20,200 C-4,178 20,158 42,161 C64,164 80,180 95,200 Z" fill="#EDEAE0" fill-opacity="0.10" stroke="none"/>
+      <path d="M15,200 C35,168 65,140 100,138 C138,136 172,160 222,185 L222,200 Z" fill="#EDEAE0" fill-opacity="0.18" stroke-width="1.4"/>
+      <line x1="100" y1="80" x2="100" y2="138" stroke-width="2.2"/>
+      <line x1="80" y1="100" x2="120" y2="100" stroke-width="2.2"/>
+    </g>
+  </svg>
+  <div class="gate-inner auth-inner">
+    <button class="back-link" id="adminBackBtn" style="padding-top:0;">&larr; Back</button>
+    <div id="adminBody"></div>
   </div>
 </div>
 
@@ -3325,6 +3436,7 @@ var chatWrap = document.getElementById('chatWrap');
 var authWrap = document.getElementById('authWrap');
 var verifyWrap = document.getElementById('verifyWrap');
 var accountWrap = document.getElementById('accountWrap');
+var adminWrap = document.getElementById('adminWrap');
 var heroSection = document.getElementById('heroSection');
 var pageIdFixed = document.getElementById('pageIdFixed');
 var detailMap = null;
@@ -3332,7 +3444,7 @@ var detailMap = null;
 // Updates the persistent bottom-left ID badge. 'detail' view is handled separately
 // in showDetail() (it needs the specific church id, e.g. FC-2 or R-4, not a static one).
 function updatePageIdBadge(view){
-  var ids = { welcome:'IC-1', landing:'LP-1', search:'SR-1', tiers:'TP-1', donate:'DN-1', quiz:'QZ-1', pastor:'PI-1', chat:'CV-1', auth:'AU-1', verify:'VF-1', account:'AC-1' };
+  var ids = { welcome:'IC-1', landing:'LP-1', search:'SR-1', tiers:'TP-1', donate:'DN-1', quiz:'QZ-1', pastor:'PI-1', chat:'CV-1', auth:'AU-1', verify:'VF-1', account:'AC-1', admin:'AD-1' };
   if(ids[view]) pageIdFixed.textContent = ids[view];
 }
 
@@ -3348,6 +3460,7 @@ function setView(view){
   authWrap.style.display = view==='auth' ? 'flex' : 'none';
   verifyWrap.style.display = view==='verify' ? 'flex' : 'none';
   accountWrap.style.display = view==='account' ? 'flex' : 'none';
+  adminWrap.style.display = view==='admin' ? 'flex' : 'none';
   // Re-render on every entry, not once at startup — a thread can gain messages
   // mid-session, so a stale render would hide exactly what you came to check.
   if(view==='pastor'){ renderPastorList(); }
@@ -3357,6 +3470,7 @@ function setView(view){
   if(view==='auth'){ renderAuth(); }
   if(view==='verify'){ renderVerify(); }
   if(view==='account'){ renderAccount(); }
+  if(view==='admin'){ renderAdmin(); }
   // The pill is hidden on the auth screens themselves (you're already there) and
   // on IC-1 (the icebreaker should be the only thing on screen).
   renderAcctPill(view);
@@ -3512,6 +3626,10 @@ function routeFromHash(){
   if(hash === 'tiers'){ setView('tiers'); return; }
   if(hash === 'donate'){ setView('donate'); return; }
   if(hash === 'quiz'){ setView('quiz'); return; }
+  // AD-1 is its own tiny gate, not part of the account system — no auth check
+  // here, renderAdmin() itself decides login-form-vs-status-panel from
+  // isAdminMode(). Deliberately reachable regardless of any signed-in account.
+  if(hash === 'admin'){ setView('admin'); return; }
   // ---- account routes (AU-1 / VF-1 / AC-1) ----
   if(hash === 'signin' || hash === 'signup'){
     // Arriving at AU-1 from anywhere else is a fresh start: clear the role choice
@@ -4557,12 +4675,31 @@ function checkVerificationCode(account, entered){
   return { ok:true };
 }
 
+// ---- password strength ----
+// A short, case-insensitive list of the usual guessable passwords (plus a login
+// that already satisfies the length/letter/number rule below, so the check below
+// actually has a chance to catch it). Good-faith, same spirit as BAD_WORDS above \u2014
+// not exhaustive, no backend to enforce anything stronger.
+var COMMON_PASSWORDS = [
+  'password1','password12','password123','letmein123','welcome123','qwerty123',
+  'qwertyui12','abc123456','admin12345','iloveyou1','football12','baseball12',
+  'dragon1234','master1234','login12345','starwars1','sunshine12','princess12',
+  'trustno123','whatever12','freedom123','shadow1234','monkey1234','superman12',
+  'batman1234','hunter1234','changeme12','passw0rd12','letmein12','welcome12'
+];
+function isCommonPassword(pw){
+  return COMMON_PASSWORDS.indexOf(String(pw||'').toLowerCase()) !== -1;
+}
+
 // ---- sign up / sign in ----
 async function createAccount(fields){
   var email = normalizeEmail(fields.email);
   if(!validEmail(email)) return { ok:false, error:'That doesn\u2019t look like a valid email address.' };
   if(!fields.name || !fields.name.trim()) return { ok:false, error:'Please tell us what to call you.' };
-  if(!fields.password || fields.password.length < 8) return { ok:false, error:'Password needs to be at least 8 characters.' };
+  var pw = fields.password || '';
+  if(pw.length < 8) return { ok:false, error:'Password needs to be at least 8 characters.' };
+  if(!/[a-zA-Z]/.test(pw) || !/[0-9]/.test(pw)) return { ok:false, error:'Password needs at least one letter and one number.' };
+  if(isCommonPassword(pw)) return { ok:false, error:'That password is too common \u2014 please choose something less guessable.' };
   if(fields.password !== fields.confirm) return { ok:false, error:'The two passwords don\u2019t match.' };
   if(findAccount(email)) return { ok:false, error:'An account already exists for that email. Try signing in.' };
   var salt = makeSalt();
@@ -4958,12 +5095,82 @@ function renderAccount(){
   });
 }
 
+// ---- ADMIN MODE (AD-1) ----
+// A separate, much simpler gate from the AU-1/VF-1/AC-1 account system above — see
+// dev note ADMIN MODE (AD-1) for the full shape. Short version: reveals the
+// internal page-ID / church-ID chips, reachable only at #admin, state lives in
+// TAB_STORE (per-tab, like the real session) under its own key, and none of it
+// touches STORE_KEYS.accounts or createAccount/currentAccount.
+// NOT REAL SECURITY — these are plain constants checked in this client-side file,
+// readable by anyone who views source. This only keeps dev IDs out of a casual
+// visitor's view. Change them to whatever you like; nothing else needs updating.
+var ADMIN_USERNAME = 'admin';
+var ADMIN_PASSWORD = 'sacristy-42';
+var ADMIN_KEY = 'cf.admin.v1';
+function isAdminMode(){ return TAB_STORE.get(ADMIN_KEY, false) === true; }
+// Syncs <body>'s admin-on class (which the CSS uses to reveal #pageIdFixed and
+// every .pew-id chip) and the top-left marker to whatever's currently in
+// TAB_STORE. Runs once on load and again on every setAdminMode() call.
+function applyAdminVisual(){
+  var on = isAdminMode();
+  document.body.classList.toggle('admin-on', on);
+  var marker = document.getElementById('adminMarker');
+  if(marker) marker.style.display = on ? 'inline-flex' : 'none';
+}
+function setAdminMode(on){
+  if(on) TAB_STORE.set(ADMIN_KEY, true); else TAB_STORE.remove(ADMIN_KEY);
+  applyAdminVisual();
+}
+function renderAdmin(){
+  var body = document.getElementById('adminBody');
+  if(isAdminMode()){
+    body.innerHTML =
+      '<p class="eyebrow">Admin</p>'+
+      '<h1 class="gate-title" style="max-width:none;">Admin mode is on</h1>'+
+      '<p class="gate-sub">Internal page IDs and church IDs are visible in this tab. Other tabs are unaffected.</p>'+
+      '<button class="auth-submit" id="adSignOut">Sign out of admin</button>';
+    document.getElementById('adSignOut').addEventListener('click', function(){
+      setAdminMode(false);
+      renderAdmin();
+    });
+    return;
+  }
+  body.innerHTML =
+    '<p class="eyebrow">Admin</p>'+
+    '<h1 class="gate-title" style="max-width:none;">Admin sign in</h1>'+
+    '<p class="gate-sub">Separate from visitor accounts. Reveals internal page/church IDs in this tab only.</p>'+
+    '<div class="auth-field"><label for="adUser">Username</label>'+
+      '<input type="text" id="adUser" autocomplete="username"></div>'+
+    '<div class="auth-field"><label for="adPass">Password</label>'+
+      pwField('adPass','current-password','','')+'</div>'+
+    '<button class="auth-submit" id="adSubmit">Sign in</button>'+
+    '<p class="auth-note" id="adNote"></p>';
+  wirePwToggles(body);
+  document.getElementById('adSubmit').addEventListener('click', submitAdminLogin);
+  body.querySelectorAll('input').forEach(function(input){
+    input.addEventListener('keydown', function(e){ if(e.key === 'Enter') submitAdminLogin(); });
+  });
+}
+function submitAdminLogin(){
+  var note = document.getElementById('adNote');
+  var user = document.getElementById('adUser').value.trim();
+  var pass = document.getElementById('adPass').value;
+  if(user === ADMIN_USERNAME && pass === ADMIN_PASSWORD){
+    setAdminMode(true);
+    renderAdmin();
+    return;
+  }
+  note.textContent = 'That username and password don’t match.';
+  note.className = 'auth-note error';
+}
+applyAdminVisual(); // sync <body>'s class + the marker with this tab's stored admin state on load
+
 // ---- the persistent top-right pill ----
 function renderAcctPill(view){
   var pill = document.getElementById('acctPill');
   // Hidden where it would be noise or redundant: the icebreaker (IC-1 should be
   // the only thing on screen) and the auth screens themselves.
-  var hide = (view === 'welcome' || view === 'auth' || view === 'verify' || view === 'account');
+  var hide = (view === 'welcome' || view === 'auth' || view === 'verify' || view === 'account' || view === 'admin');
   if(hide){ pill.style.display = 'none'; return; }
   var account = currentAccount();
   pill.style.display = 'inline-flex';
@@ -4983,6 +5190,8 @@ document.getElementById('authBackBtn').addEventListener('click', function(){
 });
 document.getElementById('verifyBackBtn').addEventListener('click', function(){ location.hash = 'signin'; });
 document.getElementById('accountBackBtn').addEventListener('click', function(){ location.hash = 'landing'; });
+document.getElementById('adminBackBtn').addEventListener('click', function(){ location.hash = 'landing'; });
+document.getElementById('adminMarker').addEventListener('click', function(){ location.hash = 'admin'; });
 
 // ---- thread ownership + persistence ----
 // A pastor sees a conversation if it was sent to their church. Membership
