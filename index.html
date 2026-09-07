@@ -316,17 +316,34 @@
   LP-1 also carries a sign-in / create-account line so a returning pastor isn't
   expected to find the corner pill.
 
-  BE HONEST ABOUT THE TWO FAKE PARTS. Do not let either of these get described
-  as finished, to the user or in a later summary:
-  1) NO EMAIL IS SENT. There is no mail server. The verification LOGIC is real
-     (6-digit code, 15-minute expiry, resend, and an unverified account cannot
-     sign in — currentAccount() returns null for one). The DELIVERY is not: the
-     message that would be sent is rendered on VF-1 as a labelled preview
-     (.mock-email, with a "no email was actually sent" banner). The entire send
-     is isolated in issueVerificationCode() — replacing that one function body
-     with a POST (backend, or a client-safe service like EmailJS/Postmark) and
-     deleting the .mock-email block from renderVerify() is the whole migration.
-  2) PASSWORD HASHING IS NOT SECURITY. hashPassword() does salted SHA-256 via
+  EMAIL IS NOW REAL, sent via EmailJS (a client-safe email service — its
+  "public key" is meant to sit in client code, unlike a normal API secret).
+  sendVerificationEmail() calls emailjs.send() with the user's own
+  EMAILJS_PUBLIC_KEY / EMAILJS_SERVICE_ID / EMAILJS_TEMPLATE_ID (search for
+  them, right above issueVerificationCode() — same section) and their EmailJS
+  template, which expects exactly two variables: {{to_name}} and {{code}}. The
+  verification LOGIC was already real before this (6-digit code, 15-minute
+  expiry, resend, and an unverified account cannot sign in — currentAccount()
+  returns null for one) — what changed is the DELIVERY. issueVerificationCode()
+  now returns the send promise so callers can show real success/failure, not
+  just assume it worked: VF-1 shows "Sending…" -> "Email sent" or a
+  "Couldn't send" error with the resend button right there, and the resend
+  button shows the same live status rather than a canned "New code issued."
+  ONLY ONE PLACE ACTUALLY FIRES A SEND: renderVerify(), on first arrival at
+  VF-1 (no code yet, or the existing one expired) — see freshSend there.
+  createAccount() and the "sign in but unverified" branch in submitAuth()
+  deliberately do NOT call issueVerificationCode() themselves anymore; they
+  just set pendingVerifyEmail and navigate to #verify, and let VF-1's own
+  render decide whether a send is actually needed. Before this, both of those
+  called it directly AND renderVerify() would (they got lucky because
+  renderVerify() checked plain `!account.code`, which was already true) — but
+  that meant the send's promise was fire-and-forget and its outcome was never
+  shown anywhere. Keep it this way: exactly one call site that sends AND
+  displays the result, or a future change here will silently swallow send
+  failures again. The mock on-screen email preview (.mock-email in CSS) is
+  gone — deleted along with the code that rendered it once delivery was real.
+  PASSWORD HASHING IS STILL NOT SECURITY, and this remains true independent of
+  the above. hashPassword() does salted SHA-256 via
      SubtleCrypto (falling back to a weak non-crypto hash on insecure origins,
      prefixed 'weak:' so it's identifiable). The hash sits in localStorage next
      to its own salt on the same machine — anyone with the device has both. It
@@ -474,6 +491,29 @@
     not hammered on every request.
 
   ===== CHANGE LOG (most recent first) =====
+  - WIRED UP REAL VERIFICATION EMAIL DELIVERY via EmailJS, per explicit user
+    request. This was the last of the two "deliberately not real" parts of
+    the account system (see ACCOUNTS & AUTH above) — password hashing is
+    still client-side and still not real security, that part is unchanged.
+    sendVerificationEmail() calls emailjs.send() with the user's own EmailJS
+    public key / service ID / template ID (EMAILJS_PUBLIC_KEY/SERVICE_ID/
+    TEMPLATE_ID, right above issueVerificationCode()); their template takes
+    {{to_name}} and {{code}}. Loaded via the EmailJS browser SDK
+    (@emailjs/browser CDN script tag, next to the Leaflet one) — no backend,
+    no build step, matches how this file has always shipped.
+    issueVerificationCode() now returns the send promise instead of nothing,
+    and VF-1 uses it for real status ("Sending…" -> "Email sent" or a
+    "Couldn't send" error), including on the resend button. Consolidated to
+    ONE call site that actually triggers a send: renderVerify(), on first
+    arrival at VF-1. createAccount() and the unverified-sign-in branch in
+    submitAuth() used to call issueVerificationCode() directly too, which
+    meant that particular send's outcome was fire-and-forget and never shown
+    anywhere — removed both call sites; they now just navigate to #verify and
+    let renderVerify()'s own logic decide whether a fresh send is needed
+    (skips it if a still-unexpired code already exists, so switching tabs or
+    reloading VF-1 can't spam a second email). Deleted the on-screen
+    .mock-email preview and its CSS — delivery is real now, so the "here's
+    what would have been sent" preview no longer applies.
   - ADDED ADMIN MODE (AD-1), per explicit request to hide the internal dev-ID
     chips (#pageIdFixed bottom-left badge, .pew-id on both the SR-1 cards and the
     detail page) from ordinary visitors while keeping them available on demand.
@@ -2187,30 +2227,6 @@
     background:none; border:none; padding:0; cursor:pointer;
     color:var(--brass); font-family:'Inter',sans-serif; font-size:12.5px; text-decoration:underline;
   }
-  /* The stand-in for a real confirmation email. There is no mail server in this
-     build, so the message that WOULD be sent is rendered on screen instead,
-     styled like an email so the flow is demonstrable — and labelled so nobody
-     mistakes it for a delivered email. See dev note ACCOUNTS & AUTH. */
-  .mock-email{
-    border:1px solid rgba(255,255,255,0.16); border-radius:12px;
-    background:rgba(255,255,255,0.05); padding:0; margin:0 0 22px; overflow:hidden;
-  }
-  .mock-email-flag{
-    background:rgba(201,162,39,0.18); border-bottom:1px solid rgba(201,162,39,0.3);
-    color:#E6C766; font-size:11px; font-weight:600; letter-spacing:0.05em;
-    text-transform:uppercase; padding:7px 16px;
-  }
-  .mock-email-head{
-    padding:14px 16px 10px; border-bottom:1px solid rgba(255,255,255,0.10);
-    font-size:12px; color:#9AA3BD; line-height:1.7;
-  }
-  .mock-email-head strong{ color:#C7CCDA; font-weight:600; }
-  .mock-email-body{ padding:18px 16px 20px; text-align:center; }
-  .mock-email-body p{ margin:0 0 12px; font-size:13px; color:#C7CCDA; }
-  .mock-code{
-    font-family:'Inter',monospace; font-size:32px; font-weight:700;
-    letter-spacing:0.28em; color:var(--brass); padding-left:0.28em;
-  }
   .verify-boxes{ display:flex; gap:10px; margin-bottom:6px; }
   .verify-boxes input{
     flex:1; height:56px; text-align:center;
@@ -2728,6 +2744,7 @@
 </footer>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 <script>
 
 var DENOM_COLORS = {
@@ -4494,10 +4511,11 @@ function openThread(threadId, role){
 //     security (the hash sits next to the salt on the same machine); it exists
 //     so this build never writes a plaintext password to disk, and so the shape
 //     of the code matches what a real backend would do. Do not ship this as-is.
-//   - Email confirmation is REAL LOGIC (6-digit code, 15-minute expiry, resend,
-//     and an unverified account cannot sign in) with a FAKE DELIVERY CHANNEL:
-//     there is no mail server, so the message is rendered on screen as a clearly
-//     labelled preview. Swapping in a real send is the one change that matters.
+//   - Email confirmation is REAL end to end now: real logic (6-digit code,
+//     15-minute expiry, resend, unverified accounts can't sign in) AND real
+//     delivery via EmailJS (see sendVerificationEmail(), just above
+//     issueVerificationCode()). No backend involved — EmailJS sends straight
+//     from the browser using a public key that's meant to be client-side.
 var STORE_KEYS = { accounts:'cf.accounts.v2', session:'cf.session.v2', lastSession:'cf.lastsession.v2', threads:'cf.threads.v2' };
 
 // TWO STORAGE SCOPES, and the split matters:
@@ -4657,13 +4675,40 @@ function makeCode(){
   }
   return ('00000' + n).slice(-6);
 }
-// "Sends" a confirmation code. THIS IS WHERE A REAL EMAIL SEND GOES — replace the
-// body of this function with a POST to your backend (or a client-safe service
-// like EmailJS/Postmark) and delete the on-screen preview in renderVerify().
+// ---- real email send (EmailJS) ----
+// EmailJS is a client-safe email service — its "public key" is DESIGNED to sit
+// in client-side code like this (unlike a normal SMTP/API secret, which must
+// never be). This is the user's own EmailJS account: public key, service ID,
+// and template ID all came from their dashboard at emailjs.com. The template
+// (template_es9i48u) expects exactly two variables: {{to_name}} and {{code}}.
+// If you fork this app, get your own three values at emailjs.com — these are
+// tied to this project's sender identity and send quota.
+var EMAILJS_PUBLIC_KEY = 'oKBsZibMtFx-FR4fO';
+var EMAILJS_SERVICE_ID = 'service_rtn2sws';
+var EMAILJS_TEMPLATE_ID = 'template_es9i48u';
+if(window.emailjs) emailjs.init({ publicKey: EMAILJS_PUBLIC_KEY });
+
+// Actually sends the confirmation email. Returns the EmailJS send promise so
+// callers can show real success/failure feedback (see renderVerify() and its
+// resend button) instead of assuming it worked.
+function sendVerificationEmail(account){
+  if(!window.emailjs){
+    return Promise.reject(new Error('The email service didn’t load — check your connection and try again.'));
+  }
+  return emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, {
+    to_email: account.email,
+    to_name: account.name,
+    code: account.code.value
+  });
+}
+// Issues a fresh code and sends it for real via EmailJS. Returns the send
+// promise (see sendVerificationEmail) — the code itself is generated and
+// stored synchronously either way, so checkVerificationCode() works even if
+// the caller doesn't wait on the returned promise.
 function issueVerificationCode(account){
   account.code = { value: makeCode(), expires: Date.now() + VERIFY_TTL_MS, sentAt: Date.now() };
   upsertAccount(account);
-  return account.code.value;
+  return sendVerificationEmail(account);
 }
 function checkVerificationCode(account, entered){
   if(!account.code) return { ok:false, error:'No code has been sent yet. Tap resend below.' };
@@ -4717,7 +4762,10 @@ async function createAccount(fields){
     createdAt: Date.now()
   };
   upsertAccount(account);
-  issueVerificationCode(account);
+  // The actual send happens once, on arrival at VF-1 (renderVerify() calls
+  // issueVerificationCode() there) — not pre-emptively here. That keeps there
+  // being exactly one place that fires a send and shows real success/failure
+  // status, instead of this fire-and-forget call silently discarding it.
   return { ok:true, account: account };
 }
 async function attemptSignIn(email, password){
@@ -4923,6 +4971,7 @@ function submitAuth(){
       if(!res.ok){ return fail(res.error); }
       authDraft = {}; // don't leave a password sitting in memory for the next render
       pendingVerifyEmail = res.account.email;
+      verifySendStatus = null; // fresh verification flow — don't show a stale status from a previous one
       location.hash = 'verify';
     });
     return;
@@ -4932,7 +4981,10 @@ function submitAuth(){
     authBusy = false;
     if(res.unverified){
       pendingVerifyEmail = res.account.email;
-      issueVerificationCode(res.account);
+      verifySendStatus = null; // fresh verification flow — don't show a stale status from a previous one
+      // No pre-emptive send here either — see the comment in createAccount().
+      // If their existing code is still live, renderVerify() reuses it rather
+      // than sending a needless second email; otherwise it sends a fresh one.
       location.hash = 'verify';
       return;
     }
@@ -4945,30 +4997,67 @@ function submitAuth(){
 }
 
 // ---- VF-1 ----
+// Tracks the most recent verification-email send attempt ({state:'sending'|
+// 'sent'|'error', error}) for whichever account is currently pending
+// verification, OUTSIDE renderVerify() itself. This matters because
+// routeFromHash() (and therefore renderVerify()) can re-run in the
+// background while VF-1 is on screen — applyFilters() calls it after every
+// re-render, including the seed-church geocoding that keeps running for a
+// few seconds after signup — so a status paragraph built from a plain local
+// variable inside renderVerify() gets silently discarded by that next
+// re-render even though the send genuinely happened (caught by Playwright
+// testing this exact race before shipping it). Module-level state survives
+// any number of re-renders; only the DOM lookup in refreshVerifySendStatusUI()
+// needs to tolerate the element not existing (VF-1 not currently showing).
+// Reset to null wherever pendingVerifyEmail is freshly assigned to a NEW
+// account (submitAuth()'s signup and unverified-signin branches) so a
+// previous account's status can't bleed into a new verification flow.
+var verifySendStatus = null;
+function verifySendStatusText(){
+  if(!verifySendStatus) return '';
+  if(verifySendStatus.state === 'sending') return 'Sending the email…';
+  if(verifySendStatus.state === 'sent') return 'Email sent — check your inbox (and spam folder).';
+  var err = verifySendStatus.error;
+  return 'Couldn\u2019t send the email'+(err && err.text ? ' ('+err.text+')' : '')+'. Tap resend below to try again.';
+}
+function verifySendStatusClass(){
+  if(verifySendStatus && verifySendStatus.state === 'error') return 'auth-note error';
+  if(verifySendStatus && verifySendStatus.state === 'sent') return 'auth-note success';
+  return 'auth-note';
+}
+function refreshVerifySendStatusUI(){
+  var el = document.getElementById('vfSendStatus');
+  if(!el) return; // VF-1 re-rendered or was left since the send kicked off — nothing to update
+  el.textContent = verifySendStatusText();
+  el.className = verifySendStatusClass();
+}
+// Issues + sends a fresh code and tracks it in verifySendStatus. The caller
+// is expected to (re-)render VF-1 right after calling this, so the "sending"
+// state shows immediately — see both call sites below.
+function triggerVerificationSend(account){
+  verifySendStatus = { state:'sending' };
+  issueVerificationCode(account).then(function(){
+    verifySendStatus = { state:'sent' };
+    refreshVerifySendStatusUI();
+  }).catch(function(err){
+    verifySendStatus = { state:'error', error:err };
+    refreshVerifySendStatusUI();
+  });
+}
+
 function renderVerify(){
   var body = document.getElementById('verifyBody');
   var account = findAccount(pendingVerifyEmail);
   if(!account){ location.hash = 'signin'; return; }
-  if(!account.code) issueVerificationCode(account);
+  // Only fires a real send when there's no live code yet — repeated renders
+  // of this same view (see the module comment above) must NOT re-send.
+  if(!account.code || Date.now() > account.code.expires) triggerVerificationSend(account);
 
   body.innerHTML =
     '<p class="eyebrow">Confirm your email</p>'+
     '<h1 class="gate-title" style="max-width:none;">Check your inbox</h1>'+
     '<p class="gate-sub">We sent a 6-digit code to <strong>'+escapeHtml(account.email)+'</strong>. It expires in 15 minutes.</p>'+
-    // The stand-in for the real email. Delete this whole block the day a real
-    // send exists — everything else on this page already works as written.
-    '<div class="mock-email">'+
-      '<div class="mock-email-flag">Test build \u00b7 no email was actually sent</div>'+
-      '<div class="mock-email-head">'+
-        '<strong>From:</strong> no-reply@churchfinder.app<br>'+
-        '<strong>To:</strong> '+escapeHtml(account.email)+'<br>'+
-        '<strong>Subject:</strong> Confirm your email address'+
-      '</div>'+
-      '<div class="mock-email-body">'+
-        '<p>Enter this code to finish setting up your account:</p>'+
-        '<div class="mock-code">'+escapeHtml(account.code.value)+'</div>'+
-      '</div>'+
-    '</div>'+
+    (verifySendStatus ? '<p class="'+verifySendStatusClass()+'" id="vfSendStatus">'+verifySendStatusText()+'</p>' : '')+
     '<div class="auth-field"><label for="vfCode">6-digit code</label>'+
       '<input type="text" id="vfCode" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000" style="letter-spacing:0.3em;text-align:center;font-size:20px;font-weight:700;"></div>'+
     '<button class="auth-submit" id="vfSubmit">Confirm email</button>'+
@@ -4980,11 +5069,12 @@ function renderVerify(){
   input.addEventListener('keydown', function(e){ if(e.key === 'Enter') submitVerify(); });
   document.getElementById('vfSubmit').addEventListener('click', submitVerify);
   document.getElementById('vfResend').addEventListener('click', function(){
-    issueVerificationCode(account);
+    triggerVerificationSend(account);
+    // Re-render rather than patch #vfNote directly: account.code is already
+    // set (triggerVerificationSend() just issued it), so this pass won't
+    // fire a second send — it just rebuilds the page with the "sending"
+    // status visible immediately, the same code path a real revisit uses.
     renderVerify();
-    var note = document.getElementById('vfNote');
-    note.textContent = 'New code issued.';
-    note.className = 'auth-note success';
   });
 }
 
