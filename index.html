@@ -481,7 +481,7 @@
   renderAdmin() draws a login form when signed out, or a status panel with a
   "Sign out of admin" button when signed in — there's no other way off; closing
   the tab clears it too, since it's sessionStorage.
-  TWO THINGS ADMIN MODE NOW ALSO CONTROLS, both added per explicit request:
+  THREE THINGS ADMIN MODE NOW ALSO CONTROLS, all added per explicit request:
   1) TP-1 gating — see the 'tiers' entry in GATEWAY/ROUTING above. isAdminMode()
      is what routeFromHash() checks to decide 'tiers' vs 'tiersLocked'.
   2) The admin test email (getAdminTestEmail()/setAdminTestEmail(), a field on
@@ -495,6 +495,22 @@
      it's a no-op and the real address is used. See PASTOR CHURCH VERIFICATION
      below for why this exists (testing a flow that normally needs access to a
      church's own inbox, using only admin's own).
+  3) ADMIN MASTER LOGIN on AU-1 (#signin): while a tab is in admin mode, typing
+     any existing account's email with ADMIN_PASSWORD (the SAME constant that
+     unlocks #admin — reused deliberately rather than adding a second
+     credential to remember) signs in as that account without knowing its
+     real password. Implemented as one extra branch in attemptSignIn() —
+     isMasterLogin = isAdminMode() && password === ADMIN_PASSWORD — that
+     substitutes for the real hashPassword()/compare check and nothing else:
+     it still falls through to the exact same unverified-account branch a
+     normal sign-in hits, so email/church verification is NOT bypassed. That's
+     deliberate — the whole point is testing an account through its real
+     flow, not around it. Gated on isAdminMode() at the moment of sign-in, not
+     cached, so it can't be used from a tab that isn't currently in admin
+     mode even by someone who knows ADMIN_PASSWORD. AU-1's sign-in tab shows a
+     one-line hint about this, but ONLY when isAdminMode() is already true for
+     that tab — a signed-out/non-admin visitor never sees any indication the
+     feature exists.
 
   ===== PASTOR CHURCH VERIFICATION (VF-1 stage two) =====
   Owning personal-email@example.com proves nothing about whether that person
@@ -613,6 +629,29 @@
     not hammered on every request.
 
   ===== CHANGE LOG (most recent first) =====
+  - ADDED ADMIN MASTER LOGIN, per explicit request ("AU-1 on admin mode
+    doesn't let me access any account using my admin password... a master
+    password key to get in only on admin mode"). The report itself was the
+    same confusion as the earlier admin-login one — trying ADMIN_PASSWORD on
+    AU-1's real sign-in form, which only ever checks a specific account's own
+    password hash — but the FEATURE requested (sign into any account by
+    email + a shared admin key, without knowing that account's real
+    password) was new and legitimate, so built it as a real capability rather
+    than just re-explaining the mix-up. One extra branch in attemptSignIn():
+    isAdminMode() && password === ADMIN_PASSWORD substitutes for the real
+    password check ONLY, then falls through to the same unverified-account
+    branch a normal sign-in hits — email/church verification still applies,
+    so admin lands exactly where a real sign-in would (the point is testing
+    the real flow, not bypassing it). Reused ADMIN_PASSWORD rather than a
+    second constant — one shared credential, already admin-only. See the
+    "THREE THINGS ADMIN MODE NOW ALSO CONTROLS" part of ADMIN MODE above.
+  - REPLACED THE FAVICON with a proper transparent-background version, per a
+    follow-up image from the user. The first favicon (below) was cropped from
+    a flattened JPEG with a white background around the rounded-square icon,
+    which left a faint white halo; swapped in a real 180x180 RGBA source with
+    alpha transparency instead. Same resize-to-32/180 + palette-quantize
+    approach, this time preserving alpha (Image.quantize(), not
+    convert('P',...), which drops it) — under 3.5KB combined base64.
   - ADDED A REAL FAVICON, per user-supplied logo image (navy rounded-square app
     icon, white house-roof outline forming a C-shape, gold cross). Embedded as
     base64 <link> tags in <head> — same no-separate-assets pattern as the seed
@@ -5122,8 +5161,21 @@ async function attemptSignIn(email, password){
   // is wrong — no need to tell a stranger which emails have accounts.
   var generic = { ok:false, error:'That email and password don\u2019t match an account.' };
   if(!account) return generic;
-  var hash = await hashPassword(password, account.salt);
-  if(hash !== account.hash) return generic;
+  // ADMIN MASTER LOGIN — only when THIS TAB is in admin mode. Typing any
+  // existing account's email with ADMIN_PASSWORD (the same one that unlocks
+  // #admin, reused rather than adding a second credential to remember) signs
+  // in as that account without knowing its real password. Gated on BOTH
+  // isAdminMode() and the password match, so a normal visitor who somehow
+  // guessed ADMIN_PASSWORD still can't use it here without also being signed
+  // into #admin in that same tab. Only substitutes for "prove you know the
+  // password" — still falls through to the unverified-account check right
+  // below, so email/church verification isn't skipped; admin ends up exactly
+  // where a real sign-in would, which is the point (testing the real flow).
+  var isMasterLogin = isAdminMode() && password === ADMIN_PASSWORD;
+  if(!isMasterLogin){
+    var hash = await hashPassword(password, account.salt);
+    if(hash !== account.hash) return generic;
+  }
   if(!account.verified){
     return { ok:false, unverified:true, account:account, error:'Confirm your email first — we\u2019ll take you there.' };
   }
@@ -5295,7 +5347,8 @@ function renderAuth(){
       '<button class="auth-submit" id="auSubmit">Sign in</button>'+
       '<p class="auth-note" id="auNote"></p>'+
       '<div class="auth-alt">No account yet? <button class="auth-linkbtn" id="auGoSignup">Create one</button></div>'+
-      '<div class="auth-alt"><button class="auth-linkbtn" id="auGoForgot">Forgot password?</button></div>';
+      '<div class="auth-alt"><button class="auth-linkbtn" id="auGoForgot">Forgot password?</button></div>'+
+      (isAdminMode() ? '<p class="auth-hint" style="margin-top:14px;">Admin mode: enter any account’s email with your admin password to sign in as that account.</p>' : '');
   }
   if(!STORE.persistent){
     html += '<p class="auth-hint" style="margin-top:14px;">Heads up: this browser is blocking local storage, so an account made here won\u2019t survive a reload.</p>';
