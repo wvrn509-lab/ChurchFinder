@@ -442,13 +442,39 @@
       still TEST SCAFFOLDING. The pill now only renders when signed OUT.
     - ANY new mutation of THREADS must call saveThreads() or it silently fails
       to survive the next reload. Existing call sites: myThreadFor, renderChat
-      (unread clear), sendChatMessage, the TP-1 membership form.
+      (unread clear), sendChatMessage, the TP-1 membership form,
+      deleteConversation() (see CV-1 DELETE CONVERSATION below).
   WHEN A REAL BACKEND EXISTS: THREADS becomes a fetch and sends become POSTs.
   renderPastorList()/renderChat()/sendChatMessage() can stay as-is — they only
   read/write this array and never touch the other side's DOM.
   All rendered fields go through escapeHtml(); message text is checked with
   containsBadWords() (the same good-faith IC-1 filter — word-boundary based, so
   it catches "shit" but not "bullshit"; pre-existing limitation, not new here).
+
+  ===== CV-1 DELETE CONVERSATION =====
+  Per explicit request, PASTOR/LEADER SIDE ONLY — an attendee viewing their own
+  side of a thread never sees this button. renderChat() gates the markup itself
+  on iAmPastor (the same per-thread role check the rest of CV-1 already uses,
+  via roleInThread() — NOT account.role directly, so a pastor viewing a thread
+  where they're the visitor side, e.g. messaging another church, correctly does
+  NOT get a delete button there). deleteConversation(t) has no role check of
+  its own — it trusts the caller — so don't wire it up from anywhere an
+  attendee could reach; the button being pastor-gated in renderChat() is the
+  only thing enforcing that today.
+  THREADS is shared data with no per-side copy (see MESSAGING MODEL above), so
+  deleting removes the conversation for BOTH sides, not just the pastor's
+  view — confirm()-gated with a message that says so explicitly, same spirit
+  as AC-1's "Reset all local data" (which is far more destructive — wipes
+  every account too — but establishes the same pattern: a plain
+  window.confirm(), no undo, state the blast radius in the prompt itself).
+  Mutates THREADS via splice (find the index, remove it) rather than
+  reassigning THREADS to a filtered copy — matches loadThreads()'s existing
+  in-place-mutation convention elsewhere in this file, so anything that might
+  hold onto the array reference stays consistent.
+  Lands back on #pastor (PI-1) after deleting, not a fallback bounce — the
+  thread is gone by the time that navigation happens, so routeFromHash()'s
+  own "thread not found" fallback would have sent them to #attendee instead
+  (wrong side for a pastor), which is why this sets the hash directly.
 
   ===== ADMIN MODE (AD-1) =====
   A SEPARATE, much simpler gate from the AU-1/VF-1/AC-1 account system above — no
@@ -629,6 +655,18 @@
     not hammered on every request.
 
   ===== CHANGE LOG (most recent first) =====
+  - ADDED "DELETE THIS CONVERSATION" TO CV-1, per explicit request, prompted by
+    a real test conversation (bad-word-filter testing) the user wanted gone.
+    Pastor/leader side only, by explicit request — an attendee never sees the
+    button. Gated via the same per-thread iAmPastor check (roleInThread())
+    the rest of CV-1 already uses, so a pastor viewing a thread where they're
+    actually the visitor side doesn't get one either. Deletes from THREADS
+    entirely (shared data, no per-side copy — removes it for the other side
+    too), confirm()-gated with a message that says so. See dev note CV-1
+    DELETE CONVERSATION for the full shape. In the same conversation, also
+    walked the user through a one-off browser-console fix (filter THREADS,
+    saveThreads(), reload) for the specific test conversation they'd already
+    made — not part of this codebase, just recorded here for continuity.
   - ADDED ADMIN MASTER LOGIN, per explicit request ("AU-1 on admin mode
     doesn't let me access any account using my admin password... a master
     password key to get in only on admin mode"). The report itself was the
@@ -2243,6 +2281,14 @@
   }
   .chat-send:hover{ background:var(--brass-dark); border-color:var(--brass-dark); color:#fff; }
   .chat-note{ font-size:12.5px; color:var(--text-dim); margin:0; }
+  /* Pastor-only (see CV-1 delete note in renderChat()) — deliberately styled
+     like a destructive action, not a normal link. */
+  .chat-delete-btn{
+    background:none; border:none; padding:0; cursor:pointer;
+    color:#E08A8A; font-family:'Inter',sans-serif; font-size:12.5px;
+    text-decoration:underline; margin-top:10px; display:inline-block;
+  }
+  .chat-delete-btn:hover{ color:#E85D5D; }
   .chat-note.error{ color:#B4453F; }
   @media (max-width:600px){
     .chat-bubble{ max-width:88%; }
@@ -4745,7 +4791,12 @@ function renderChat(){
         '<button id="roleVisitorBtn" class="'+(iAmPastor?'':'on')+'">Attendee</button>'+
         '<button id="rolePastorBtn" class="'+(iAmPastor?'on':'')+'">Pastor</button>'+
       '</div>')+
-    '<div class="chat-head">'+header+'</div>'+
+    '<div class="chat-head">'+header+
+      // Pastor/leader only — see dev note CV-1 DELETE CONVERSATION. Deletes
+      // the thread for BOTH sides (THREADS is shared data, there's no
+      // per-side copy), so it's confirm()-gated and says so.
+      (iAmPastor ? '<button class="chat-delete-btn" id="chatDeleteBtn">Delete this conversation</button>' : '')+
+    '</div>'+
     '<div class="chat-log" id="chatLog">'+log+'</div>'+
     '<div class="chat-composer">'+
       '<textarea id="chatInput" maxlength="1200" placeholder="'+(iAmPastor?'Write back\u2026':'Write a message\u2026')+'"></textarea>'+
@@ -4768,6 +4819,23 @@ function renderChat(){
     window.currentRole = 'pastor'; renderChat();
   });
   document.getElementById('chatSendBtn').addEventListener('click', sendChatMessage);
+  var deleteBtn = document.getElementById('chatDeleteBtn');
+  if(deleteBtn) deleteBtn.addEventListener('click', function(){ deleteConversation(t); });
+}
+
+// Pastor/leader only (renderChat() gates the button itself on iAmPastor — this
+// function has no role check of its own, so don't wire it up anywhere an
+// attendee could reach). Removes the thread from THREADS entirely — it's
+// shared data with no per-side copy, so this deletes it for the other side
+// too, not just the pastor's view. That's why it's confirm()-gated with a
+// message that says so, same spirit as AC-1's "Reset all local data".
+function deleteConversation(t){
+  if(!window.confirm('Delete this conversation with '+t.who+'? This removes it for both sides and can’t be undone.')) return;
+  var idx = THREADS.indexOf(t);
+  if(idx !== -1) THREADS.splice(idx, 1);
+  saveThreads();
+  activeThreadId = null;
+  location.hash = 'pastor';
 }
 
 function sendChatMessage(){
