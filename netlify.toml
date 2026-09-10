@@ -1,2 +1,12 @@
 [build]
   publish = "."
+
+# This is a single-file, no-backend static app: things like the EmailJS
+# PUBLIC key and the admin-mode password have to live in index.html itself
+# (there's no server to hide them behind). Netlify's automatic secrets
+# scanner flags strings like that and FAILS THE BUILD by default, which
+# would silently leave the live site stuck on an old deploy no matter how
+# many times we push. Turning the scanner off for this file is what lets
+# deploys actually succeed.
+[build.environment]
+  SECRETS_SCAN_OMIT_PATHS = "index.html"

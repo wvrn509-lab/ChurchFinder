@@ -655,6 +655,26 @@
     not hammered on every request.
 
   ===== CHANGE LOG (most recent first) =====
+  - DEPLOY FIX: added SECRETS_SCAN_OMIT_PATHS = "index.html" to netlify.toml.
+    Reported symptom: pushes to main kept landing on GitHub (confirmed with
+    git diff origin/main main == empty) but never appeared on the live
+    churchseeker.netlify.app site. This is a single-file, no-backend static
+    app, so things like EMAILJS_PUBLIC_KEY and ADMIN_PASSWORD necessarily
+    live in index.html's own source — there's no server to hide them
+    behind. Netlify's automatic secrets scanner flags strings shaped like
+    API keys and FAILS THE BUILD by default, which would explain every
+    deploy since the EmailJS work landed silently failing and the live
+    site staying stuck on an old build regardless of how many times main
+    was pushed. Also confirmed separately: main never had a netlify.toml at
+    all until this session added one — the only branch that had one
+    (claude/netlify-connection-issues-w44g83) is stuck at the very first
+    rename commit and missing every feature built since, so if Netlify's
+    production branch was ever pointed at that branch instead of main,
+    that alone would also explain a stale site. Could not verify the fix
+    against the live URL directly — this sandbox's network policy blocks
+    outbound access to *.netlify.app, so ask the user to reload the site
+    and/or check the Netlify deploy log for a "secrets detected" failure
+    if it's still stale after this push.
   - COPY-EDITING SWEEP, per explicit request ("taking a sweep and check for
     proper punctuation, capitalization all of that just to look more
     professional"). Text-only pass across every user-facing string in the
