@@ -97,13 +97,19 @@
   (FC-1, FC-2, FC-3, FC-4), before any non-featured/live results (which stay sorted
   by distance). This was a deliberate request — don't revert to pure distance sort.
 
-  ===== GATEWAY / ROUTING (IC-1, LP-1, TP-1, PI-1, DN-1, QZ-1, AU-1, VF-1, AC-1, AD-1, PR-1) =====
-  The whole page is now gated. Fourteen top-level "views" are controlled by ONE
+  ===== GATEWAY / ROUTING (IC-1, LP-1, TP-1, PI-1, DN-1, QZ-1, AU-1, VF-1, AC-1, AD-1, AD-2, PR-1) =====
+  The whole page is now gated. Fifteen top-level "views" are controlled by ONE
   function, setView(view): 'welcome' (IC-1) | 'landing' | 'search' | 'tiers' |
   'tiersLocked' (also id TP-1 — what a non-admin sees at #tiers instead of
   'tiers' itself; see PASTOR CHURCH VERIFICATION / TP-1 GATING below) |
   'pastor' (PI-1) | 'chat' (CV-1) | 'donate' | 'quiz' | 'auth' (AU-1) |
-  'verify' (VF-1) | 'account' (AC-1) | 'admin' (AD-1) | 'reset' (PR-1) | 'detail'.
+  'verify' (VF-1) | 'account' (AC-1) | 'admin' (AD-1) |
+  'adminAccounts' (AD-2, #admin-accounts — the account list; see ADMIN ACCOUNTS
+  below, and note it requires admin mode to ALREADY be on, unlike AD-1 which is
+  its own login gate) | 'reset' (PR-1) | 'detail'.
+  EVERY view has a way back out. SR-1's lives in the hero (#searchBackBtn ->
+  '#landing'); it is hidden on 'detail', which shares that hero but carries its
+  own "Back to results", so the two don't stack.
   The three account views are documented in ACCOUNTS & AUTH below, including
   which routes now require a signed-in account. The rest:
     - 'welcome' (id IC-1, #icWrap): the TRUE default/entry view now — DEFAULT when
@@ -654,7 +660,103 @@
     limit) is the primary geocoder and Nominatim is only hit as a per-seed fallback,
     not hammered on every request.
 
+  ===== ACCOUNT PROFILES (photo + bio) =====
+  Two optional fields on an account record: `photo` and `bio`. Both are absent
+  on accounts created before this existed, and every surface degrades to
+  initials-on-a-color when there is no photo — so there is NO migration step and
+  nothing to backfill. avatarHtml(person, size) is the single renderer; it takes
+  anything with .name and optionally .photo, which means an account object works
+  as-is and so does a synthetic {name, photo} built from a thread.
+  WHERE FACES APPEAR: AC-1 (the profile header it edits), CV-1 (chat head +
+  every bubble), PI-1 (inbox rows), AD-2 (account list) and the top-right pill.
+  PHOTOS ARE ALWAYS RE-ENCODED, NEVER STORED AS PICKED. readImageAsAvatar()
+  center-crops the chosen file to a square, downscales to AVATAR_PX (256) and
+  re-encodes as JPEG via a canvas. A phone photo is several MB and localStorage
+  is ~5MB for EVERYTHING here (accounts, threads, sessions); the canvas pass is
+  what makes "keep the image inside the account record" viable at all with no
+  backend. Measured output is ~1.5-30KB. If you raise AVATAR_PX, re-check that
+  against the quota before assuming it's free.
+  SECURITY: a photo read back from localStorage is attacker-controllable in
+  principle and gets interpolated into a style attribute, so safePhoto() drops
+  anything that isn't a plain base64 image data URI rather than trying to escape
+  it. Keep that check if you touch avatarHtml().
+  EDIT STATE IS MODULE-LEVEL (profileDraft), same reasoning as the VF-1/PR-1
+  send-status trackers: refreshThreadsFromStorage() re-renders AC-1 in the
+  background whenever another tab writes THREADS, and a draft in a local
+  variable would silently vanish mid-edit. profileDraft.photo is deliberately
+  THREE-STATE — undefined means "unchanged", null means "remove", a string means
+  "this new one" — because "no photo chosen" and "photo removed" are different
+  saves. setView() resets it on the way out of AC-1.
+
+  ===== TYPING INDICATOR (CV-1) =====
+  "The other person is writing" lives in its OWN localStorage key
+  (TYPING_KEY = 'cf.typing.v1'), NOT on the thread. That separation is the
+  entire design and is not an arbitrary choice: writing to THREADS triggers
+  refreshThreadsFromStorage() in every other tab, which re-renders CV-1
+  wholesale — so keystroke state stored there would rebuild the OTHER person's
+  composer several times a second and destroy their half-typed reply. The
+  cross-tab sync ignores this key (its storage handler only reacts to
+  STORE_KEYS.threads), and the poll only flips ONE already-rendered node's
+  `hidden`. Nothing re-renders to show typing. There is a regression test for
+  exactly this: "pastor's half-typed reply survived the other side typing".
+  SHAPE: entries are "<threadId>|<role>" -> timestamp. A timestamp rather than a
+  boolean because a closed tab cannot clean up after itself — a mark counts only
+  while it is newer than TYPING_TTL_MS (4s), so a vanished tab stops showing as
+  typing on its own. markTyping() is throttled to one write per TYPING_PING_MS
+  (900ms) so this is a heartbeat, not a keystroke log. Clearing is explicit on
+  send, on emptying the box, on blur, and on leaving the view (setView), so the
+  TTL is the backstop rather than the normal path.
+  CSS GOTCHA: .chat-typing sets display:flex, which BEATS the browser's built-in
+  [hidden]{display:none}. The explicit .chat-typing[hidden] rule is load-bearing
+  — remove it and the bubble never hides.
+
+  ===== ADMIN ACCOUNTS (AD-2) =====
+  Second admin page, at #admin-accounts, linked from AD-1's panel. Lists every
+  account in STORE_KEYS.accounts with avatar, name, email, role, church, both
+  verification states, join date and conversation count (counted with the same
+  ownership rules the rest of the app uses, so it agrees with what each person
+  sees on their own screen).
+  DELIBERATELY READ-ONLY FOR NOW. It exists so the account data can be looked at
+  before deciding which actions (delete, force-verify, change role, impersonate,
+  reset password) are worth building — a toolbar guessed at in advance would be
+  the wrong toolbar. Add actions here when they've been chosen.
+  GATING: unlike AD-1, which is its own login form, AD-2 requires admin mode to
+  ALREADY be on — it shows real people's email addresses, so routeFromHash()
+  bounces a non-admin to the AD-1 gate instead.
+  SCOPE, AND WHY THE PAGE SAYS SO: accounts are in localStorage, so this lists
+  accounts created in THIS browser. It is not a user table and no server exists
+  to make it one. A short list here could easily be misread as "everyone who
+  ever signed up", so the page states the limit on screen rather than quietly
+  implying reach it doesn't have. Keep that note if you restyle the page.
+
   ===== CHANGE LOG (most recent first) =====
+  - FOUR FEATURES IN ONE PASS, per explicit request: a way back to LP-1, a
+    typing indicator in chats, account profiles ("basically copy Instagram's
+    setup"), and an admin page listing accounts. Full detail in the dedicated
+    dev notes above (ACCOUNT PROFILES; TYPING INDICATOR; ADMIN ACCOUNTS) —
+    short version of each:
+    1) BACK TO LP-1. SR-1 was the one view with no way back to the gateway, so
+       picking "Church Attendee" was a one-way door. Added #searchBackBtn to the
+       hero. The hero is shared with the detail page, which has its own "Back to
+       results", so setView() hides this one there rather than stacking two.
+    2) TYPING INDICATOR. Animated three-dot bubble on CV-1 when the other side
+       is composing. Kept in its own localStorage key rather than on the thread
+       — the whole point, since THREADS writes re-render CV-1 in every other tab
+       and would destroy the other person's half-typed reply several times a
+       second. Timestamp-based with a 4s TTL so a closed tab stops showing as
+       typing without needing to clean up after itself.
+    3) PROFILES. Optional photo + bio per account, Instagram-style header on
+       AC-1 with an inline editor, faces surfaced in chats, the pastor inbox,
+       AD-2 and the pill. Photos go through a canvas (square crop, 256px, JPEG)
+       so a multi-MB phone photo lands at ~1.5-30KB — necessary, since
+       localStorage is ~5MB for everything in this app.
+    4) AD-2 ACCOUNT LIST. New admin-only page at #admin-accounts showing every
+       account in this browser with role, verification state and profile.
+       Read-only ON PURPOSE: the user asked to see the accounts first and decide
+       the admin actions afterwards, so no actions were guessed at.
+    Verified with a new 40-check Playwright suite covering all four (including
+    the composer-survival regression above and the TTL expiry), plus the three
+    existing suites re-run green (29 + 8 + 8).
   - CRITICAL FIX: the ENTIRE SITE was broken — visitors saw this very dev-note
     comment block rendered as raw visible page text instead of the app. Root
     cause: the previous "DEPLOY FIX" change-log entry (below) literally
@@ -1911,6 +2013,10 @@
   .back-link:hover{ color:var(--brass-dark); }
   body.vigil-page .back-link{ color:#D9B84A; }
   body.vigil-page .back-link:hover{ color:#F2F0E8; }
+  /* SR-1's hero sits on the dark ink background, so the default ink-soft
+     back-link would be almost invisible against it. */
+  .hero-back{ color:#C7CCDA; padding-bottom:14px; }
+  .hero-back:hover{ color:var(--brass); }
   .profile-card{
     background:var(--card);
     border:1px solid var(--line);
@@ -2356,6 +2462,105 @@
   }
   .chat-delete-btn:hover{ color:#E85D5D; }
   .chat-note.error{ color:#B4453F; }
+
+  /* ---- AVATARS + PROFILES (see dev note ACCOUNT PROFILES) ----
+     One .avatar element covers every surface that shows a person: AC-1's
+     profile header, CV-1's chat head and bubbles, PI-1's inbox rows and AD-2's
+     account list. A photo renders as a background-image; with no photo the
+     same box shows initials on a color derived from the name, so a profile
+     picture is optional everywhere rather than leaving a broken hole. */
+  .avatar{
+    flex:none; border-radius:50%; overflow:hidden;
+    background-size:cover; background-position:center;
+    display:inline-flex; align-items:center; justify-content:center;
+    font-family:'Inter',sans-serif; font-weight:600; color:#fff;
+    letter-spacing:0.02em; text-transform:uppercase;
+    box-shadow:0 0 0 1px rgba(20,33,61,0.10) inset;
+  }
+  .avatar.sm{ width:28px; height:28px; font-size:11px; }
+  .avatar.md{ width:44px; height:44px; font-size:15px; }
+  .avatar.lg{ width:88px; height:88px; font-size:30px; }
+  /* Instagram-ish profile header: photo on the left, identity + bio stacked
+     to the right, everything else on AC-1 unchanged below it. */
+  .profile-head{ display:flex; align-items:center; gap:18px; margin:4px 0 18px; }
+  .profile-head-main{ min-width:0; }
+  .profile-name{
+    font-family:'Fraunces',serif; font-size:24px; font-weight:500;
+    color:var(--parchment); margin:0; line-height:1.2; word-break:break-word;
+  }
+  .profile-handle{ font-size:12.5px; color:#8A93AC; margin:3px 0 0; word-break:break-all; }
+  .profile-role-tag{
+    display:inline-block; margin-top:7px; padding:3px 9px; border-radius:999px;
+    font-size:11px; font-weight:600; letter-spacing:0.04em;
+    background:rgba(201,162,39,0.18); color:var(--brass);
+  }
+  .profile-bio{
+    color:#C7CCDA; font-size:13.5px; line-height:1.6;
+    margin:0 0 16px; white-space:pre-wrap; word-break:break-word;
+  }
+  .profile-bio.empty{ color:#8A93AC; font-style:italic; }
+  .profile-photo-row{ display:flex; align-items:center; gap:14px; margin-bottom:16px; }
+  .profile-photo-actions{ display:flex; flex-direction:column; gap:7px; }
+  .profile-file-btn{
+    background:none; border:1px solid rgba(255,255,255,0.22); color:var(--parchment);
+    border-radius:8px; padding:7px 13px; font-family:'Inter',sans-serif;
+    font-size:12.5px; font-weight:600; cursor:pointer; text-align:center;
+  }
+  .profile-file-btn:hover{ border-color:var(--brass); color:var(--brass); }
+  .profile-file-btn.danger{ color:#E08A8A; border-color:rgba(224,138,138,0.35); }
+  .profile-file-btn.danger:hover{ color:#E85D5D; border-color:#E85D5D; }
+  .profile-counter{ font-size:11.5px; color:#8A93AC; text-align:right; margin:5px 0 0; }
+  .profile-counter.over{ color:#E08A8A; }
+  .chat-head-row{ display:flex; align-items:center; gap:12px; }
+  .chat-head-row .chat-with{ line-height:1.2; }
+  .chat-bubble-row{ display:flex; align-items:flex-end; gap:8px; max-width:84%; }
+  .chat-bubble-row.mine{ align-self:flex-end; flex-direction:row-reverse; }
+  .chat-bubble-row.theirs{ align-self:flex-start; }
+  .chat-bubble-row .chat-bubble{ max-width:100%; }
+
+  /* ---- TYPING INDICATOR (see dev note TYPING INDICATOR) ----
+     Styled as a "theirs" bubble so it reads as the other person's message
+     forming, and it lives permanently in the log as a hidden node that a poll
+     toggles — never a re-render, which would wipe a half-typed reply. */
+  .chat-typing{ align-self:flex-start; display:flex; align-items:center; gap:9px; }
+  /* display:flex above beats the browser's built-in [hidden]{display:none},
+     so the attribute needs re-asserting or the bubble never actually hides. */
+  .chat-typing[hidden]{ display:none; }
+  .chat-typing-bubble{
+    background:#EFEDE4; border-radius:14px; border-bottom-left-radius:5px;
+    padding:13px 15px; display:flex; align-items:center; gap:4px;
+  }
+  .chat-typing-dot{
+    width:7px; height:7px; border-radius:50%; background:#8A8578;
+    animation:cfTypingDot 1.25s infinite ease-in-out;
+  }
+  .chat-typing-dot:nth-child(2){ animation-delay:0.18s; }
+  .chat-typing-dot:nth-child(3){ animation-delay:0.36s; }
+  .chat-typing-label{ font-size:11.5px; color:var(--text-dim); }
+  @keyframes cfTypingDot{
+    0%, 60%, 100%{ transform:translateY(0); opacity:0.45; }
+    30%{ transform:translateY(-4px); opacity:1; }
+  }
+  @media (prefers-reduced-motion:reduce){
+    .chat-typing-dot{ animation:none; opacity:0.75; }
+  }
+
+  /* ---- AD-2 account list ---- */
+  .admin-acct{
+    display:flex; align-items:flex-start; gap:13px;
+    padding:14px 0; border-bottom:1px solid rgba(255,255,255,0.08);
+  }
+  .admin-acct:last-child{ border-bottom:none; }
+  .admin-acct-main{ min-width:0; flex:1; }
+  .admin-acct-name{ font-size:14.5px; font-weight:600; color:var(--parchment); }
+  .admin-acct-email{ font-size:12.5px; color:#8A93AC; word-break:break-all; margin-top:1px; }
+  .admin-acct-bio{ font-size:12.5px; color:#C7CCDA; margin-top:6px; white-space:pre-wrap; word-break:break-word; }
+  .admin-acct-tags{ display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .admin-acct-meta{ font-size:11.5px; color:#8A93AC; margin-top:7px; }
+  .admin-acct-count{
+    font-size:12px; color:#8A93AC; margin:0 0 4px;
+    letter-spacing:0.04em; text-transform:uppercase; font-weight:600;
+  }
   @media (max-width:600px){
     .chat-bubble{ max-width:88%; }
   }
@@ -2599,6 +2804,9 @@
   }
   .account-badge.ok{ background:rgba(143,203,155,0.18); color:#8FCB9B; }
   .account-badge.no{ background:rgba(224,138,138,0.18); color:#E08A8A; }
+  /* Role is not a pass/fail state, so it gets its own neutral tint — green and
+     red stay reserved for verification, which is the thing worth scanning for. */
+  .account-badge.role{ background:rgba(201,162,39,0.18); color:var(--brass); }
   .account-actions{ display:flex; gap:10px; flex-wrap:wrap; }
   .account-btn{
     height:44px; padding:0 18px; cursor:pointer; border-radius:8px;
@@ -3007,6 +3215,27 @@
   </div>
 </div>
 
+<!-- AD-2: Admin account list. Second admin-only page, reachable at
+     #admin-accounts and linked from AD-1. Read-only by design for now: it shows
+     every account stored in THIS browser (localStorage has no idea accounts
+     exist anywhere else) so the shape of the data is visible before deciding
+     which admin actions are worth having. Body rendered by
+     renderAdminAccounts(); routeFromHash() bounces non-admins to #admin. -->
+<div class="gate-wrap" id="adminAccountsWrap" style="display:none;">
+  <svg class="rose gate-rose" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+    <g stroke="#EDEAE0" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M-20,200 C-4,178 20,158 42,161 C64,164 80,180 95,200 Z" fill="#EDEAE0" fill-opacity="0.10" stroke="none"/>
+      <path d="M15,200 C35,168 65,140 100,138 C138,136 172,160 222,185 L222,200 Z" fill="#EDEAE0" fill-opacity="0.18" stroke-width="1.4"/>
+      <line x1="100" y1="80" x2="100" y2="138" stroke-width="2.2"/>
+      <line x1="80" y1="100" x2="120" y2="100" stroke-width="2.2"/>
+    </g>
+  </svg>
+  <div class="gate-inner account-inner">
+    <button class="back-link" id="adminAccountsBackBtn" style="padding-top:0;">&larr; Back to admin</button>
+    <div id="adminAccountsBody"></div>
+  </div>
+</div>
+
 <!-- DN-1: Donate page. Interest-capture for now (email signup), not a live checkout —
      Stripe integration is intentionally deferred until the user's LLC is formed. See
      dev note CHANGE LOG for context. Swap the form for real payment buttons later. -->
@@ -3064,6 +3293,7 @@
     </g>
   </svg>
   <div class="hero-inner">
+    <button class="back-link hero-back" id="searchBackBtn">&larr; Back</button>
     <p class="eyebrow">Church finder</p>
     <h1>Find where to belong, nearby.</h1>
     <p class="sub">Search churches of every denomination near any address, town, or zip code — pulled live from open map data.</p>
@@ -3846,6 +4076,7 @@ var verifyWrap = document.getElementById('verifyWrap');
 var resetWrap = document.getElementById('resetWrap');
 var accountWrap = document.getElementById('accountWrap');
 var adminWrap = document.getElementById('adminWrap');
+var adminAccountsWrap = document.getElementById('adminAccountsWrap');
 var heroSection = document.getElementById('heroSection');
 var pageIdFixed = document.getElementById('pageIdFixed');
 var detailMap = null;
@@ -3853,12 +4084,21 @@ var detailMap = null;
 // Updates the persistent bottom-left ID badge. 'detail' view is handled separately
 // in showDetail() (it needs the specific church id, e.g. FC-2 or R-4, not a static one).
 function updatePageIdBadge(view){
-  var ids = { welcome:'IC-1', landing:'LP-1', search:'SR-1', tiers:'TP-1', tiersLocked:'TP-1', donate:'DN-1', quiz:'QZ-1', pastor:'PI-1', chat:'CV-1', auth:'AU-1', verify:'VF-1', account:'AC-1', admin:'AD-1', reset:'PR-1' };
+  var ids = { welcome:'IC-1', landing:'LP-1', search:'SR-1', tiers:'TP-1', tiersLocked:'TP-1', donate:'DN-1', quiz:'QZ-1', pastor:'PI-1', chat:'CV-1', auth:'AU-1', verify:'VF-1', account:'AC-1', admin:'AD-1', adminAccounts:'AD-2', reset:'PR-1' };
   if(ids[view]) pageIdFixed.textContent = ids[view];
 }
 
 // Central view switch — one of 'welcome' (IC-1), 'landing' (LP-1), 'search', 'tiers' (TP-1), 'donate' (DN-1), 'quiz' (QZ-1), 'detail'.
 function setView(view){
+  // Navigating away from a conversation ends typing for real — otherwise the
+  // mark sits there until TYPING_TTL_MS expires and the other side watches a
+  // phantom compose from someone who has left the page.
+  if(currentView === 'chat' && view !== 'chat' && activeThreadId){
+    clearTyping(activeThreadId, myChatRole());
+  }
+  // Leaving AC-1 abandons a half-finished profile edit, so coming back lands on
+  // the profile itself rather than dropping straight into a stale editor.
+  if(currentView === 'account' && view !== 'account'){ resetProfileDraft(); }
   icWrap.style.display = view==='welcome' ? 'flex' : 'none';
   landingWrap.style.display = view==='landing' ? 'flex' : 'none';
   tierWrap.style.display = view==='tiers' ? 'flex' : 'none';
@@ -3872,6 +4112,7 @@ function setView(view){
   resetWrap.style.display = view==='reset' ? 'flex' : 'none';
   accountWrap.style.display = view==='account' ? 'flex' : 'none';
   adminWrap.style.display = view==='admin' ? 'flex' : 'none';
+  adminAccountsWrap.style.display = view==='adminAccounts' ? 'flex' : 'none';
   // Re-render on every entry, not once at startup — a thread can gain messages
   // mid-session, so a stale render would hide exactly what you came to check.
   if(view==='pastor'){ renderPastorList(); }
@@ -3883,6 +4124,7 @@ function setView(view){
   if(view==='reset'){ renderReset(); }
   if(view==='account'){ renderAccount(); }
   if(view==='admin'){ renderAdmin(); }
+  if(view==='adminAccounts'){ renderAdminAccounts(); }
   // The pill is hidden on the auth screens themselves (you're already there) and
   // on IC-1 (the icebreaker should be the only thing on screen).
   renderAcctPill(view);
@@ -3894,6 +4136,10 @@ function setView(view){
     else { quizRenderQuestion(); }
   }
   heroSection.style.display = (view==='search' || view==='detail') ? 'block' : 'none';
+  // The hero is shared by SR-1 and the detail page; only SR-1 needs this back
+  // link, since the detail page has its own "Back to results".
+  var heroBack = document.getElementById('searchBackBtn');
+  if(heroBack) heroBack.style.display = view==='search' ? 'inline-flex' : 'none';
   resultsWrap.style.display = view==='search' ? 'grid' : 'none';
   detailWrap.style.display = view==='detail' ? 'block' : 'none';
   if(view!=='detail'){
@@ -4048,6 +4294,13 @@ function routeFromHash(){
   // here, renderAdmin() itself decides login-form-vs-status-panel from
   // isAdminMode(). Deliberately reachable regardless of any signed-in account.
   if(hash === 'admin'){ setView('admin'); return; }
+  // AD-2 holds real people's email addresses, so unlike AD-1 (which is its own
+  // login form) it needs admin mode already on — a non-admin lands on the AD-1
+  // gate instead of a list of accounts.
+  if(hash === 'admin-accounts'){
+    if(!isAdminMode()){ location.hash = 'admin'; return; }
+    setView('adminAccounts'); return;
+  }
   // ---- account routes (AU-1 / VF-1 / AC-1) ----
   if(hash === 'signin' || hash === 'signup'){
     // Arriving at AU-1 from anywhere else is a fresh start: clear the role choice
@@ -4793,6 +5046,7 @@ function renderPastorList(){
     return '<button class="pastor-msg'+(t.unreadPastor?'':' read')+'" data-thread="'+escapeHtml(t.id)+'">'+
       '<span class="pastor-msg-top">'+
         '<span class="pastor-dot"></span>'+
+        avatarHtml(threadPerson(t,'visitor'),'sm')+
         '<span class="pastor-msg-from">'+escapeHtml(t.who)+'</span>'+
         '<span class="pastor-msg-when">'+escapeHtml(last ? last.when : '')+'</span>'+
       '</span>'+
@@ -4829,23 +5083,46 @@ function renderChat(){
     if(t.unreadVisitor){ t.unreadVisitor = 0; saveThreads(); }
   }
 
+  // Both sides' faces, resolved from real accounts where they exist so a
+  // profile picture shows up in the conversation rather than only on AC-1.
+  var themPerson = threadPerson(t, iAmPastor ? 'visitor' : 'pastor');
+  var mePerson = threadPerson(t, iAmPastor ? 'pastor' : 'visitor');
+
   var header = iAmPastor
-    ? '<div class="chat-with">'+escapeHtml(t.who)+'</div>'+
-      '<div class="chat-sub">'+(t.email ? escapeHtml(t.email) : 'No reply address given')+' &middot; about '+escapeHtml(t.church)+'</div>'+
+    ? '<div class="chat-head-row">'+avatarHtml(themPerson,'md')+'<div>'+
+        '<div class="chat-with">'+escapeHtml(t.who)+'</div>'+
+        '<div class="chat-sub">'+(t.email ? escapeHtml(t.email) : 'No reply address given')+' &middot; about '+escapeHtml(t.church)+'</div>'+
+      '</div></div>'+
       (t.ice ? '<div class="chat-ice"><strong>Icebreaker</strong>'+escapeHtml(t.ice)+'</div>' : '')
-    : '<div class="chat-with">Pastor '+escapeHtml(t.pastor)+'</div>'+
-      '<div class="chat-sub">'+escapeHtml(t.church)+'</div>';
+    : '<div class="chat-head-row">'+avatarHtml(themPerson,'md')+'<div>'+
+        '<div class="chat-with">Pastor '+escapeHtml(t.pastor)+'</div>'+
+        '<div class="chat-sub">'+escapeHtml(t.church)+'</div>'+
+      '</div></div>';
 
   var log = t.messages.length
     ? t.messages.map(function(m){
         var mine = (m.by === 'pastor') === iAmPastor;
         var label = mine ? 'You' : (m.by==='pastor' ? 'Pastor '+t.pastor : t.who);
-        return '<div class="chat-bubble '+(mine?'mine':'theirs')+'">'+escapeHtml(m.text)+
-          '<div class="chat-meta">'+escapeHtml(label)+' &middot; '+escapeHtml(m.when)+'</div></div>';
+        return '<div class="chat-bubble-row '+(mine?'mine':'theirs')+'">'+
+          avatarHtml(mine ? mePerson : themPerson, 'sm')+
+          '<div class="chat-bubble '+(mine?'mine':'theirs')+'">'+escapeHtml(m.text)+
+          '<div class="chat-meta">'+escapeHtml(label)+' &middot; '+escapeHtml(m.when)+'</div></div>'+
+        '</div>';
       }).join('')
     : '<p class="chat-empty">'+(iAmPastor
         ? 'Nothing here yet.'
         : 'No messages yet. Say hello \u2014 a question about service times or what to expect is a perfectly good place to start.')+'</p>';
+  // Rendered once, always present, hidden by default \u2014 the poll in
+  // refreshTypingUI() only flips `hidden`, so showing "typing" never re-renders
+  // this view and never touches the composer.
+  var typingNode =
+    '<div class="chat-typing" id="chatTyping" hidden>'+
+      avatarHtml(themPerson,'sm')+
+      '<div class="chat-typing-bubble">'+
+        '<span class="chat-typing-dot"></span><span class="chat-typing-dot"></span><span class="chat-typing-dot"></span>'+
+      '</div>'+
+      '<span class="chat-typing-label">'+escapeHtml(iAmPastor ? t.who : 'Pastor '+t.pastor)+' is typing\u2026</span>'+
+    '</div>';
 
   bodyEl.innerHTML =
     // Role pill: TEST SCAFFOLDING, and now only for the signed-out path. Once an
@@ -4863,7 +5140,7 @@ function renderChat(){
       // per-side copy), so it's confirm()-gated and says so.
       (iAmPastor ? '<button class="chat-delete-btn" id="chatDeleteBtn">Delete this conversation</button>' : '')+
     '</div>'+
-    '<div class="chat-log" id="chatLog">'+log+'</div>'+
+    '<div class="chat-log" id="chatLog">'+log+typingNode+'</div>'+
     '<div class="chat-composer">'+
       '<textarea id="chatInput" maxlength="1200" placeholder="'+(iAmPastor?'Write back\u2026':'Write a message\u2026')+'"></textarea>'+
       '<div class="chat-send-row">'+
@@ -4887,6 +5164,22 @@ function renderChat(){
   document.getElementById('chatSendBtn').addEventListener('click', sendChatMessage);
   var deleteBtn = document.getElementById('chatDeleteBtn');
   if(deleteBtn) deleteBtn.addEventListener('click', function(){ deleteConversation(t); });
+
+  // Typing marks. Emptying the box clears immediately rather than waiting out
+  // TYPING_TTL_MS, so deleting a draft stops the other side's indicator at once;
+  // blur does the same, since a tab left open on a half-written message
+  // shouldn't read as someone actively typing.
+  var chatInput = document.getElementById('chatInput');
+  if(chatInput){
+    chatInput.addEventListener('input', function(){
+      if(chatInput.value.trim()) markTyping(t.id, myChatRole());
+      else clearTyping(t.id, myChatRole());
+    });
+    chatInput.addEventListener('blur', function(){ clearTyping(t.id, myChatRole()); });
+  }
+  // A render can land while the other side is mid-sentence (a message arriving,
+  // a tab switch); re-assert the indicator instead of waiting for the next poll.
+  refreshTypingUI();
 }
 
 // Pastor/leader only (renderChat() gates the button itself on iAmPastor — this
@@ -4925,6 +5218,10 @@ function sendChatMessage(){
   // Mark unread for the OTHER side — that's what makes the reply visible as new
   // when you flip roles.
   if(iAmPastor) t.unreadVisitor++; else t.unreadPastor++;
+  // Sending IS the end of typing — clear before the re-render, or the other
+  // side keeps seeing the indicator for another TYPING_TTL_MS after the
+  // message they were waiting for has already landed.
+  clearTyping(t.id, iAmPastor ? 'pastor' : 'visitor');
   saveThreads();
   renderChat();
 }
@@ -5939,6 +6236,279 @@ async function submitResetComplete(){
   location.hash = 'signin';
 }
 
+// ============================================================================
+// ACCOUNT PROFILES  (profile picture + bio)
+// ============================================================================
+// Two optional fields on an account record: `photo` (a self-contained data URI)
+// and `bio` (short free text). Both default to absent, and EVERY surface that
+// shows a person degrades to initials-on-a-color when there's no photo — so an
+// account made before profiles existed renders correctly with no migration.
+//
+// PHOTOS ARE RE-ENCODED, NEVER STORED AS PICKED. A phone photo is several MB;
+// localStorage is ~5MB for EVERYTHING (accounts, threads, sessions). So the
+// chosen file goes through a canvas: center-cropped square, downscaled to
+// AVATAR_PX, re-encoded as JPEG. That lands around 15-30KB regardless of what
+// was picked, which is what makes "store the image in the account record" a
+// reasonable thing to do at all in a no-backend build.
+var PROFILE_BIO_MAX = 160;
+var AVATAR_PX = 256;
+// A photo read back out of localStorage is attacker-controllable in principle
+// (anyone can edit their own storage), and it gets interpolated into a style
+// attribute. Anything that isn't a plain base64 image data URI is dropped
+// rather than escaped — there's no legitimate reason for another shape here.
+var SAFE_PHOTO_RE = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/;
+function safePhoto(photo){
+  return (typeof photo === 'string' && SAFE_PHOTO_RE.test(photo)) ? photo : null;
+}
+function initialsFor(name){
+  var parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if(!parts.length) return '?';
+  if(parts.length === 1) return parts[0].slice(0,2);
+  return parts[0][0] + parts[parts.length-1][0];
+}
+// Stable per-name color so the same person keeps the same initials tile
+// everywhere, instead of flickering between renders.
+function avatarColorFor(name){
+  var palette = ['#4B3B63','#2F5233','#6B2737','#4A6670','#9C7C1A','#2A3A5C'];
+  var s = String(name || '');
+  var h = 0;
+  for(var i=0;i<s.length;i++){ h = ((h << 5) - h + s.charCodeAt(i)) | 0; }
+  return palette[Math.abs(h) % palette.length];
+}
+// person: any object with .name and optionally .photo (an account works as-is).
+function avatarHtml(person, size){
+  var name = (person && person.name) || '?';
+  var photo = safePhoto(person && person.photo);
+  var cls = 'avatar ' + (size || 'md');
+  if(photo){
+    return '<span class="'+cls+'" style="background-image:url(\''+photo+'\')" role="img" aria-label="'+escapeHtml(name)+'"></span>';
+  }
+  return '<span class="'+cls+'" style="background:'+avatarColorFor(name)+'" role="img" aria-label="'+
+    escapeHtml(name)+'">'+escapeHtml(initialsFor(name))+'</span>';
+}
+// File -> square data URI, via canvas. Async because both FileReader and image
+// decoding are; every failure path calls back with a human-readable reason
+// rather than throwing, since this runs straight off a file picker.
+function readImageAsAvatar(file, cb){
+  if(!file){ cb('No file chosen.'); return; }
+  if(!/^image\//.test(file.type || '')){ cb('That file isn’t an image.'); return; }
+  if(file.size > 12 * 1024 * 1024){ cb('That image is too big — pick one under 12 MB.'); return; }
+  var reader = new FileReader();
+  reader.onerror = function(){ cb('Couldn’t read that file.'); };
+  reader.onload = function(){
+    var img = new Image();
+    img.onerror = function(){ cb('That image couldn’t be opened.'); };
+    img.onload = function(){
+      try{
+        var side = Math.min(img.width, img.height);
+        if(!side){ cb('That image looks empty.'); return; }
+        var canvas = document.createElement('canvas');
+        canvas.width = AVATAR_PX; canvas.height = AVATAR_PX;
+        canvas.getContext('2d').drawImage(
+          img, (img.width - side)/2, (img.height - side)/2, side, side,
+          0, 0, AVATAR_PX, AVATAR_PX
+        );
+        cb(null, canvas.toDataURL('image/jpeg', 0.82));
+      }catch(e){ cb('That image couldn’t be processed.'); }
+    };
+    img.src = reader.result;
+  };
+  reader.readAsDataURL(file);
+}
+// Which real account sits on each side of a thread, so a conversation can show
+// actual profile pictures instead of initials for people who have one. Both
+// lookups can miss (a signed-out visitor, a church with no pastor account yet)
+// and the caller falls back to the name already stored on the thread.
+function visitorAccountFor(t){ return t && t.owner ? findAccount(t.owner) : null; }
+function pastorAccountFor(t){
+  if(!t) return null;
+  var list = loadAccounts();
+  for(var i=0;i<list.length;i++){
+    var a = list[i];
+    if(a.role !== 'pastor') continue;
+    // Membership enquiries aren't tied to a listing (see threadBelongsToPastor),
+    // so any pastor account stands in as the face of that conversation.
+    if(t.churchId === 'MEMBERSHIP') return a;
+    if(a.churchId && a.churchId === t.churchId) return a;
+  }
+  return null;
+}
+// side: 'pastor' | 'visitor'. Returns {name, photo} for avatarHtml().
+function threadPerson(t, side){
+  if(side === 'pastor'){
+    var pa = pastorAccountFor(t);
+    return { name: pa ? pa.name : ('Pastor ' + (t.pastor || '')), photo: pa && pa.photo };
+  }
+  var va = visitorAccountFor(t);
+  return { name: va ? va.name : t.who, photo: va && va.photo };
+}
+
+// ---- AC-1 profile editing state ----
+// Module-level on purpose, same reasoning as the VF-1/PR-1 send-status
+// trackers: refreshThreadsFromStorage() re-renders AC-1 in the background
+// whenever another tab touches THREADS, and a draft held in a local variable
+// would silently vanish mid-edit. `photo` uses three states — undefined means
+// "unchanged", null means "remove it", a string means "this new one".
+var profileDraft = { editing:false, bio:null, photo:undefined, note:null, noteClass:'' };
+function resetProfileDraft(){
+  profileDraft = { editing:false, bio:null, photo:undefined, note:null, noteClass:'' };
+}
+function profileEditorHtml(account){
+  var bio = profileDraft.bio === null ? (account.bio || '') : profileDraft.bio;
+  var shownPhoto = profileDraft.photo === undefined ? account.photo : profileDraft.photo;
+  var over = bio.length > PROFILE_BIO_MAX;
+  return '<div class="account-card">'+
+    '<p class="auth-hint" style="margin:0 0 14px;"><strong style="color:#C7CCDA;">Edit profile</strong></p>'+
+    '<div class="profile-photo-row">'+
+      avatarHtml({ name: account.name, photo: shownPhoto }, 'lg')+
+      '<div class="profile-photo-actions">'+
+        '<button type="button" class="profile-file-btn" id="pfPickBtn">'+
+          (shownPhoto ? 'Change photo' : 'Upload photo')+'</button>'+
+        (shownPhoto ? '<button type="button" class="profile-file-btn danger" id="pfRemoveBtn">Remove photo</button>' : '')+
+        '<input type="file" id="pfFile" accept="image/*" style="display:none;">'+
+      '</div>'+
+    '</div>'+
+    '<div class="auth-field"><label for="pfName">Display name</label>'+
+      '<input type="text" id="pfName" maxlength="60" value="'+escapeHtml(account.name)+'"></div>'+
+    '<div class="auth-field"><label for="pfBio">Bio</label>'+
+      '<textarea id="pfBio" rows="3" maxlength="'+(PROFILE_BIO_MAX + 40)+'" '+
+        'style="width:100%;box-sizing:border-box;border:1px solid var(--line);border-radius:10px;'+
+        'padding:11px 13px;font-family:\'Inter\',sans-serif;font-size:14px;background:#fff;color:#1B1B18;resize:vertical;" '+
+        'placeholder="A sentence or two about you.">'+escapeHtml(bio)+'</textarea>'+
+      '<p class="profile-counter'+(over?' over':'')+'" id="pfCount">'+bio.length+' / '+PROFILE_BIO_MAX+'</p></div>'+
+    '<div class="account-actions" style="margin-top:4px;">'+
+      '<button class="account-btn primary" id="pfSave">Save profile</button>'+
+      '<button class="account-btn" id="pfCancel">Cancel</button>'+
+    '</div>'+
+    (profileDraft.note ? '<p class="auth-note '+profileDraft.noteClass+'">'+escapeHtml(profileDraft.note)+'</p>' : '')+
+  '</div>';
+}
+// Wires the editor that profileEditorHtml() just wrote into the page. Split out
+// so renderAccount() stays a single innerHTML assignment plus event wiring,
+// matching how every other page in this file is built.
+function wireProfileEditor(account){
+  var fileInput = document.getElementById('pfFile');
+  var pickBtn = document.getElementById('pfPickBtn');
+  if(pickBtn) pickBtn.addEventListener('click', function(){ fileInput.click(); });
+  if(fileInput) fileInput.addEventListener('change', function(){
+    // Keep whatever is typed before the re-render below throws the DOM away.
+    profileDraft.bio = document.getElementById('pfBio').value;
+    readImageAsAvatar(fileInput.files && fileInput.files[0], function(err, dataUri){
+      if(err){ profileDraft.note = err; profileDraft.noteClass = 'error'; }
+      else { profileDraft.photo = dataUri; profileDraft.note = null; profileDraft.noteClass = ''; }
+      renderAccount();
+    });
+  });
+  var removeBtn = document.getElementById('pfRemoveBtn');
+  if(removeBtn) removeBtn.addEventListener('click', function(){
+    profileDraft.bio = document.getElementById('pfBio').value;
+    profileDraft.photo = null;
+    renderAccount();
+  });
+  var bioEl = document.getElementById('pfBio');
+  var countEl = document.getElementById('pfCount');
+  if(bioEl) bioEl.addEventListener('input', function(){
+    countEl.textContent = bioEl.value.length + ' / ' + PROFILE_BIO_MAX;
+    countEl.className = 'profile-counter' + (bioEl.value.length > PROFILE_BIO_MAX ? ' over' : '');
+  });
+  var cancelBtn = document.getElementById('pfCancel');
+  if(cancelBtn) cancelBtn.addEventListener('click', function(){ resetProfileDraft(); renderAccount(); });
+  var saveBtn = document.getElementById('pfSave');
+  if(saveBtn) saveBtn.addEventListener('click', function(){
+    var name = document.getElementById('pfName').value.trim();
+    var bio = bioEl.value;
+    if(!name){
+      profileDraft.bio = bio;
+      profileDraft.note = 'Please keep a display name — it’s what pastors see when you write in.';
+      profileDraft.noteClass = 'error';
+      renderAccount(); return;
+    }
+    if(bio.length > PROFILE_BIO_MAX){
+      profileDraft.bio = bio;
+      profileDraft.note = 'That bio is ' + bio.length + ' characters — trim it to ' + PROFILE_BIO_MAX + ' or fewer.';
+      profileDraft.noteClass = 'error';
+      renderAccount(); return;
+    }
+    account.name = name;
+    account.bio = bio.trim();
+    if(profileDraft.photo !== undefined) account.photo = profileDraft.photo;
+    upsertAccount(account);
+    resetProfileDraft();
+    renderAccount();
+    // No renderAcctPill() here on purpose: the pill is hidden on AC-1 anyway
+    // (see its hide list), and setView() rebuilds it on the way out, so a new
+    // name or photo is already there by the time the pill is next visible.
+  });
+}
+
+// ============================================================================
+// TYPING INDICATOR  (CV-1)
+// ============================================================================
+// "The other person is writing" state, kept in its OWN localStorage key rather
+// than on the thread. That separation is the whole design:
+// THREADS changing triggers refreshThreadsFromStorage() in every other tab,
+// which re-renders CV-1 wholesale — so storing keystroke state there would
+// rebuild the other person's composer (destroying their half-typed reply)
+// several times a second. This key is ignored by that sync, and the poll below
+// only toggles ONE already-present node's `hidden`, never re-rendering.
+//
+// Entries are "<threadId>|<role>" -> timestamp. Presence isn't enough, since a
+// closed tab can't clean up after itself; a mark counts only while it's newer
+// than TYPING_TTL_MS, so a vanished tab stops showing as typing on its own.
+var TYPING_KEY = 'cf.typing.v1';
+var TYPING_TTL_MS = 4000;   // a mark older than this is treated as "stopped"
+var TYPING_PING_MS = 900;   // at most one write per this long, not one per keystroke
+var TYPING_POLL_MS = 800;
+var lastTypingPing = 0;
+function typingKeyFor(threadId, role){ return threadId + '|' + role; }
+function readTypingMap(){
+  var map = STORE.get(TYPING_KEY, {});
+  return (map && typeof map === 'object') ? map : {};
+}
+// Drops marks old enough that nobody could still be typing, so an abandoned tab
+// can't leave an entry sitting in storage forever.
+function pruneTypingMap(map, now){
+  Object.keys(map).forEach(function(k){
+    if(typeof map[k] !== 'number' || (now - map[k]) > TYPING_TTL_MS * 4) delete map[k];
+  });
+  return map;
+}
+function markTyping(threadId, role){
+  var now = Date.now();
+  if(now - lastTypingPing < TYPING_PING_MS) return;   // throttle: storage write, not a keystroke log
+  lastTypingPing = now;
+  var map = pruneTypingMap(readTypingMap(), now);
+  map[typingKeyFor(threadId, role)] = now;
+  STORE.set(TYPING_KEY, map);
+}
+function clearTyping(threadId, role){
+  if(!threadId) return;
+  var map = readTypingMap();
+  delete map[typingKeyFor(threadId, role)];
+  lastTypingPing = 0;   // next keystroke should ping immediately, not wait out the throttle
+  STORE.set(TYPING_KEY, pruneTypingMap(map, Date.now()));
+}
+function myChatRole(){ return window.currentRole === 'pastor' ? 'pastor' : 'visitor'; }
+function otherSideTyping(threadId, myRole){
+  var at = readTypingMap()[typingKeyFor(threadId, myRole === 'pastor' ? 'visitor' : 'pastor')];
+  return typeof at === 'number' && (Date.now() - at) < TYPING_TTL_MS;
+}
+// Toggles the indicator only when it actually changes state — an unconditional
+// write would fight the log's scroll position on every poll.
+function refreshTypingUI(){
+  if(currentView !== 'chat' || !activeThreadId) return;
+  var el = document.getElementById('chatTyping');
+  if(!el) return;
+  var on = otherSideTyping(activeThreadId, myChatRole());
+  if(el.hidden !== on) return;   // el.hidden === !on already: nothing to do
+  el.hidden = !on;
+  if(on){
+    var log = document.getElementById('chatLog');
+    if(log) log.scrollTop = log.scrollHeight;
+  }
+}
+setInterval(refreshTypingUI, TYPING_POLL_MS);
+
 // ---- AC-1 ----
 function renderAccount(){
   var body = document.getElementById('accountBody');
@@ -5952,12 +6522,28 @@ function renderAccount(){
     return n + ((isPastor ? t.unreadPastor : t.unreadVisitor) ? 1 : 0);
   }, 0);
 
+  // Profile header (photo + name + bio) sits above everything else, the way a
+  // profile page reads \u2014 the account facts stay in the cards below it.
+  var profileBlock = profileDraft.editing
+    ? profileEditorHtml(account)
+    : '<div class="profile-head">'+
+        avatarHtml(account, 'lg')+
+        '<div class="profile-head-main">'+
+          '<p class="profile-name">'+escapeHtml(account.name)+'</p>'+
+          '<p class="profile-handle">'+escapeHtml(account.email)+'</p>'+
+          '<span class="profile-role-tag">'+(isPastor ? 'Church leader' : 'Attendee')+'</span>'+
+        '</div>'+
+      '</div>'+
+      '<p class="profile-bio'+(account.bio ? '' : ' empty')+'">'+
+        (account.bio ? escapeHtml(account.bio) : 'No bio yet \u2014 add one so people know a little about you before they reach out.')+
+      '</p>'+
+      '<div class="account-actions" style="margin-bottom:18px;">'+
+        '<button class="account-btn" id="acEditProfile">Edit profile</button>'+
+      '</div>';
+
   body.innerHTML =
     '<p class="eyebrow">Account</p>'+
-    '<h1 class="gate-title" style="max-width:none;">'+escapeHtml(account.name)+'</h1>'+
-    '<p class="gate-sub">'+(isPastor
-      ? 'You\u2019re signed in as a church leader.'
-      : 'You\u2019re signed in as an attendee.')+'</p>'+
+    profileBlock+
     '<div class="account-card">'+
       '<div class="account-row"><span class="k">Email</span><span class="v">'+escapeHtml(account.email)+'</span></div>'+
       '<div class="account-row"><span class="k">Status</span><span class="v"><span class="account-badge ok">Confirmed</span></span></div>'+
@@ -6015,6 +6601,13 @@ function renderAccount(){
     '</div>'+
     '<p class="auth-hint" style="margin-top:20px;">Test build \u2014 your account lives in this browser only. It won\u2019t appear on another device until there\u2019s a server behind this.</p>';
 
+  if(profileDraft.editing){ wireProfileEditor(account); }
+  var editProfile = document.getElementById('acEditProfile');
+  if(editProfile) editProfile.addEventListener('click', function(){
+    resetProfileDraft();
+    profileDraft.editing = true;
+    renderAccount();
+  });
   var inbox = document.getElementById('acGoInbox');
   if(inbox) inbox.addEventListener('click', function(){ location.hash = 'pastor'; });
   var verifyChurch = document.getElementById('acVerifyChurch');
@@ -6115,6 +6708,11 @@ function renderAdmin(){
         '<button class="account-btn primary" id="adTestEmailSave">Save test email</button>'+
         '<p class="auth-note" id="adTestEmailNote"></p>'+
       '</div>'+
+      '<div class="account-card">'+
+        '<p class="auth-hint" style="margin:0 0 12px;"><strong style="color:#C7CCDA;">Accounts</strong></p>'+
+        '<p class="auth-hint" style="margin:0 0 12px;">Everyone who has signed up in this browser — role, church, verification state and profile.</p>'+
+        '<button class="account-btn primary" id="adViewAccounts">View accounts (' + loadAccounts().length + ') &rarr;</button>'+
+      '</div>'+
       '<button class="auth-submit" id="adSignOut">Sign out of admin</button>';
     document.getElementById('adTestEmailSave').addEventListener('click', function(){
       var val = document.getElementById('adTestEmail').value.trim();
@@ -6122,6 +6720,9 @@ function renderAdmin(){
       var note = document.getElementById('adTestEmailNote');
       note.textContent = val ? 'Saved \u2014 verification emails will come here while admin mode is on.' : 'Cleared \u2014 verification emails will go to the real address again.';
       note.className = 'auth-note success';
+    });
+    document.getElementById('adViewAccounts').addEventListener('click', function(){
+      location.hash = 'admin-accounts';
     });
     document.getElementById('adSignOut').addEventListener('click', function(){
       setAdminMode(false);
@@ -6145,6 +6746,76 @@ function renderAdmin(){
     input.addEventListener('keydown', function(e){ if(e.key === 'Enter') submitAdminLogin(); });
   });
 }
+// ---- ADMIN ACCOUNTS (AD-2) ----
+// A window onto STORE_KEYS.accounts, nothing more — deliberately READ-ONLY for
+// now. It exists so the account data can be looked at before deciding which
+// admin actions (delete, force-verify, change role, impersonate) are actually
+// worth building, rather than guessing at a toolbar first.
+//
+// SCOPE, AND WHY THE PAGE SAYS SO OUT LOUD: accounts live in localStorage, so
+// this lists the accounts created in THIS browser. It is not a user table and
+// there is no server that would make it one. Someone reading a short list here
+// could easily assume it's everyone who has ever signed up, so the page states
+// the limit rather than quietly implying reach it doesn't have.
+function renderAdminAccounts(){
+  var body = document.getElementById('adminAccountsBody');
+  if(!isAdminMode()){ location.hash = 'admin'; return; }
+  var accounts = loadAccounts();
+  var rows = accounts.map(function(a){
+    var isPastor = a.role === 'pastor';
+    // Conversation counts reuse the same ownership rules the rest of the app
+    // uses, so this agrees with what each person sees on their own screen.
+    var threadCount = THREADS.filter(function(t){
+      return isPastor ? threadBelongsToPastor(t, a) : t.owner === a.email;
+    }).length;
+    var created = a.createdAt ? new Date(a.createdAt).toLocaleDateString(undefined, { year:'numeric', month:'short', day:'numeric' }) : 'unknown';
+    return '<div class="admin-acct">'+
+      avatarHtml(a, 'md')+
+      '<div class="admin-acct-main">'+
+        '<div class="admin-acct-name">'+escapeHtml(a.name || '(no name)')+'</div>'+
+        '<div class="admin-acct-email">'+escapeHtml(a.email)+'</div>'+
+        (a.bio ? '<div class="admin-acct-bio">'+escapeHtml(a.bio)+'</div>' : '')+
+        '<div class="admin-acct-tags">'+
+          '<span class="account-badge role">'+(isPastor ? 'Pastor' : 'Attendee')+'</span>'+
+          (a.verified
+            ? '<span class="account-badge ok">Email confirmed</span>'
+            : '<span class="account-badge no">Email unconfirmed</span>')+
+          (isPastor
+            ? (a.churchVerified
+                ? '<span class="account-badge ok">Church verified</span>'
+                : '<span class="account-badge no">Church unverified</span>')
+            : '')+
+          (a.photo ? '<span class="account-badge ok">Has photo</span>' : '')+
+        '</div>'+
+        (isPastor
+          ? '<div class="admin-acct-meta">Church: '+escapeHtml(a.churchName || 'not set')+
+            (a.churchId ? ' ('+escapeHtml(a.churchId)+')' : ' — not linked to a listing')+'</div>'
+          : '')+
+        '<div class="admin-acct-meta">Joined '+escapeHtml(created)+' &middot; '+threadCount+
+          ' conversation'+(threadCount===1?'':'s')+'</div>'+
+      '</div>'+
+    '</div>';
+  }).join('');
+
+  body.innerHTML =
+    '<p class="eyebrow">Admin</p>'+
+    '<h1 class="gate-title" style="max-width:none;">Accounts</h1>'+
+    '<p class="gate-sub">Every account created in this browser, with role, verification state and profile.</p>'+
+    '<div class="account-card">'+
+      '<p class="admin-acct-count">'+accounts.length+' account'+(accounts.length===1?'':'s')+'</p>'+
+      (accounts.length
+        ? rows
+        : '<p class="auth-hint" style="margin:6px 0 0;">No accounts yet in this browser. Create one from the sign-up page and it will appear here.</p>')+
+    '</div>'+
+    '<p class="auth-hint" style="margin-top:16px;">Accounts are stored in this browser’s local storage, so this lists the ones created here — not everyone who has ever signed up. A real user list needs a server behind the app.</p>'+
+    '<div class="account-actions" style="margin-top:18px;">'+
+      '<button class="account-btn" id="adAcctRefresh">Refresh</button>'+
+      '<button class="account-btn" id="adAcctBack">Back to admin</button>'+
+    '</div>';
+
+  document.getElementById('adAcctRefresh').addEventListener('click', renderAdminAccounts);
+  document.getElementById('adAcctBack').addEventListener('click', function(){ location.hash = 'admin'; });
+}
 function submitAdminLogin(){
   var note = document.getElementById('adNote');
   var user = document.getElementById('adUser').value.trim();
@@ -6164,12 +6835,15 @@ function renderAcctPill(view){
   var pill = document.getElementById('acctPill');
   // Hidden where it would be noise or redundant: the icebreaker (IC-1 should be
   // the only thing on screen) and the auth screens themselves.
-  var hide = (view === 'welcome' || view === 'auth' || view === 'verify' || view === 'account' || view === 'admin' || view === 'reset');
+  var hide = (view === 'welcome' || view === 'auth' || view === 'verify' || view === 'account' || view === 'admin' || view === 'adminAccounts' || view === 'reset');
   if(hide){ pill.style.display = 'none'; return; }
   var account = currentAccount();
   pill.style.display = 'inline-flex';
+  // The dot is the signed-in tell for accounts with no photo; one with a photo
+  // shows the photo instead, which reads as "signed in" on its own.
   pill.innerHTML = account
-    ? '<span class="acct-pill-dot"></span>'+escapeHtml(account.name)+
+    ? (safePhoto(account.photo) ? avatarHtml(account,'sm') : '<span class="acct-pill-dot"></span>')+
+      escapeHtml(account.name)+
       '<span style="opacity:0.6;font-weight:500;">'+(account.role==='pastor'?'Pastor':'Attendee')+'</span>'
     : 'Sign in';
 }
@@ -6184,8 +6858,14 @@ document.getElementById('authBackBtn').addEventListener('click', function(){
 });
 document.getElementById('verifyBackBtn').addEventListener('click', function(){ location.hash = 'signin'; });
 document.getElementById('resetBackBtn').addEventListener('click', function(){ location.hash = 'signin'; });
+// SR-1 had no way back to the LP-1 gateway — every other page has one, so a
+// visitor who picked "Church Attendee" was stuck on the search page. The hero is
+// shared with the detail view, which carries its own "Back to results", so
+// setView() hides this one there rather than stacking two back buttons.
+document.getElementById('searchBackBtn').addEventListener('click', function(){ location.hash = 'landing'; });
 document.getElementById('accountBackBtn').addEventListener('click', function(){ location.hash = 'landing'; });
 document.getElementById('adminBackBtn').addEventListener('click', function(){ location.hash = 'landing'; });
+document.getElementById('adminAccountsBackBtn').addEventListener('click', function(){ location.hash = 'admin'; });
 document.getElementById('adminMarker').addEventListener('click', function(){ location.hash = 'admin'; });
 
 // ---- thread ownership + persistence ----
