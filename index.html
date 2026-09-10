@@ -721,10 +721,31 @@
   verification states, join date and conversation count (counted with the same
   ownership rules the rest of the app uses, so it agrees with what each person
   sees on their own screen).
-  DELIBERATELY READ-ONLY FOR NOW. It exists so the account data can be looked at
-  before deciding which actions (delete, force-verify, change role, impersonate,
-  reset password) are worth building — a toolbar guessed at in advance would be
-  the wrong toolbar. Add actions here when they've been chosen.
+  ACTIONS, behind a per-row "Manage" toggle (the list stays a list; the buttons
+  are one click away). The four were chosen by the user after seeing the
+  read-only version, which was the point of shipping that first:
+    - SIGN IN AS. Switches THIS tab to that account. Goes through
+      attemptSignIn(email, ADMIN_PASSWORD) — the master-login branch — NOT
+      setSession() directly, so the identical rules apply and an unverified
+      account still lands on VF-1. Admin gets a shortcut, not a bypass; keep it
+      that way if you refactor, since the whole value of admin mode here is
+      testing the REAL flow.
+    - FORCE VERIFY. Stamps verified (and churchVerified for a pastor, which is
+      the gate an admin usually can't clear because that code goes to the
+      church's own inbox). Hidden once an account is fully verified.
+    - CHANGE ROLE / RELINK CHURCH. Flips attendee <-> pastor; the church
+      dropdown appears for pastors. A pastor with no linked listing has an
+      inbox nobody can reach, so the confirmation says so.
+    - DELETE. Removes the account and the threads THEY started. A pastor's
+      church threads are deliberately kept: the visitor on the other side owns
+      that conversation too, and deleting a pastor must not erase other
+      people's messages. Confirm-gated, and it signs this tab out if the
+      deleted account was the one signed in here.
+  Every handler re-reads the account with findAccount() instead of closing over
+  the rendered row, so two tabs editing the same person can't write back a
+  stale record. adminAcctOpen/adminAcctNote are module-level for the usual
+  reason in this file — a background re-render must not collapse an open panel
+  or swallow the confirmation.
   GATING: unlike AD-1, which is its own login form, AD-2 requires admin mode to
   ALREADY be on — it shows real people's email addresses, so routeFromHash()
   bounces a non-admin to the AD-1 gate instead.
@@ -735,6 +756,13 @@
   implying reach it doesn't have. Keep that note if you restyle the page.
 
   ===== CHANGE LOG (most recent first) =====
+  - ADDED THE FOUR AD-2 ADMIN ACTIONS the user picked after seeing the
+    read-only list: sign in as, force verify, change role / relink church, and
+    delete. Behind a per-row "Manage" toggle so the page still reads as a list.
+    See the ADMIN ACCOUNTS dev note above for the shape and the two rules worth
+    keeping: "sign in as" routes through the master-login branch so
+    verification is NOT bypassed, and deleting a pastor keeps their church's
+    conversations because the visitor on the other side owns those too.
   - FIXED THE FEATURED-CHURCH DISAPPEARANCE ("Why isn't Rest in Grace on the
     map?"), root-caused at last. It was never really a live-geocoder outage;
     it was two bugs in our own code, found by probing what the app actually
@@ -2596,6 +2624,25 @@
     font-size:12px; color:#8A93AC; margin:0 0 4px;
     letter-spacing:0.04em; text-transform:uppercase; font-weight:600;
   }
+  /* Per-row admin actions, hidden behind a Manage toggle so the list still
+     reads as a list rather than a wall of buttons. */
+  .admin-acct-manage{
+    background:none; border:none; padding:0; margin-top:8px; cursor:pointer;
+    font-family:'Inter',sans-serif; font-size:12px; font-weight:600;
+    color:var(--brass); text-decoration:underline;
+  }
+  .admin-acct-manage:hover{ color:#E3C25A; }
+  .admin-acct-panel{
+    margin-top:12px; padding:12px 14px;
+    background:rgba(0,0,0,0.18); border:1px solid rgba(255,255,255,0.08);
+    border-radius:10px;
+  }
+  .admin-acct-panel .auth-field{ margin-bottom:10px; }
+  .admin-acct-btns{ display:flex; flex-wrap:wrap; gap:8px; }
+  .admin-acct-btns .account-btn{ width:auto; padding:0 14px; height:34px; font-size:12.5px; }
+  .account-btn.danger{ border-color:rgba(224,138,138,0.45); color:#E08A8A; }
+  .account-btn.danger:hover{ background:#8E3B3B; border-color:#8E3B3B; color:#fff; }
+  .admin-acct-warn{ font-size:11.5px; color:#8A93AC; margin:10px 0 0; }
   @media (max-width:600px){
     .chat-bubble{ max-width:88%; }
   }
@@ -4171,6 +4218,11 @@ function setView(view){
   // Leaving AC-1 abandons a half-finished profile edit, so coming back lands on
   // the profile itself rather than dropping straight into a stale editor.
   if(currentView === 'account' && view !== 'account'){ resetProfileDraft(); }
+  // Same for AD-2: an open action panel and a stale "Deleted X." confirmation
+  // shouldn't still be sitting there next time the list is opened.
+  if(currentView === 'adminAccounts' && view !== 'adminAccounts'){
+    adminAcctOpen = null; adminAcctNote = null;
+  }
   icWrap.style.display = view==='welcome' ? 'flex' : 'none';
   landingWrap.style.display = view==='landing' ? 'flex' : 'none';
   tierWrap.style.display = view==='tiers' ? 'flex' : 'none';
@@ -6829,6 +6881,119 @@ function renderAdmin(){
 // there is no server that would make it one. Someone reading a short list here
 // could easily assume it's everyone who has ever signed up, so the page states
 // the limit rather than quietly implying reach it doesn't have.
+// Which row's action panel is open, and the last action's result message. Both
+// module-level so a background re-render (another tab writing THREADS) can't
+// collapse the panel or swallow the confirmation mid-use.
+var adminAcctOpen = null;
+var adminAcctNote = null;
+// Signs this tab in as another account. Deliberately goes through
+// attemptSignIn() with ADMIN_PASSWORD — the master-login path — rather than
+// calling setSession() directly, so the SAME rules apply: an unverified
+// account still lands on VF-1 exactly as a real sign-in would, instead of
+// admin quietly teleporting past a gate the real flow enforces.
+function adminSignInAs(account){
+  attemptSignIn(account.email, ADMIN_PASSWORD).then(function(res){
+    if(res.unverified){
+      // attemptSignIn() does NOT create a session for an unverified account, so
+      // without this the tab would sit on VF-1 for one person while still
+      // signed in as whoever it was before — two identities at once. Drop the
+      // old one; submitVerifyEmail() establishes the right session on success.
+      signOut();
+      startVerifyFlow(res.account.email);
+      location.hash = 'verify';
+      return;
+    }
+    if(!res.ok) return;
+    location.hash = res.account.role === 'pastor' ? 'pastor' : 'attendee';
+  });
+}
+// Stamps an account as confirmed without a code. For a pastor this covers BOTH
+// gates, since the church-affiliation code is the one an admin usually can't
+// receive (it goes to the church's own inbox).
+function adminForceVerify(account){
+  account.verified = true;
+  account.code = null;
+  if(account.role === 'pastor'){
+    account.churchVerified = true;
+    account.churchCode = null;
+  }
+  upsertAccount(account);
+  adminAcctNote = account.name + ' is now marked verified.';
+  renderAdminAccounts();
+}
+function adminSetRole(account, role){
+  account.role = role === 'pastor' ? 'pastor' : 'attendee';
+  adminAcctNote = account.name + ' is now ' + (account.role === 'pastor' ? 'a pastor' : 'an attendee') +
+    (account.role === 'pastor' && !account.churchId ? ' — link a church listing below so people can message them.' : '.');
+  upsertAccount(account);
+  renderAdminAccounts();
+}
+function adminLinkChurch(account, seedId){
+  var seed = SEED_CHURCHES.filter(function(s){ return s.id === seedId; })[0];
+  if(!seed) return;
+  account.churchId = seed.id;
+  account.churchName = seed.name;
+  upsertAccount(account);
+  adminAcctNote = account.name + ' is now linked to ' + seed.name + '.';
+  renderAdminAccounts();
+}
+// Removes the account and the conversations THEY started. A pastor's church
+// threads are deliberately left alone: those conversations belong to the
+// visitors on the other side too, and deleting a pastor account shouldn't
+// erase other people's messages.
+function adminDeleteAccount(account){
+  // Re-read THREADS from storage FIRST. This tab's copy can be up to one poll
+  // interval stale, and the splice below is followed by saveThreads() — writing
+  // a stale array back would silently erase a conversation another tab created
+  // in the last couple of seconds. (Caught by a test that deleted an account
+  // moments after another tab had messaged.)
+  loadThreads();
+  var owned = THREADS.filter(function(t){ return t.owner === account.email; }).length;
+  if(!window.confirm(
+      'Delete ' + account.name + ' (' + account.email + ')?\n\n' +
+      'This also removes ' + owned + ' conversation' + (owned===1?'':'s') + ' they started. ' +
+      'Conversations sent TO their church by other people are kept. This can’t be undone.'
+  )) return;
+  saveAccounts(loadAccounts().filter(function(a){
+    return normalizeEmail(a.email) !== normalizeEmail(account.email);
+  }));
+  for(var i = THREADS.length - 1; i >= 0; i--){
+    if(THREADS[i].owner === account.email) THREADS.splice(i, 1);
+  }
+  saveThreads();
+  // If this tab was signed in as the account just deleted, that session now
+  // points at nothing — drop it rather than leaving a ghost signed in.
+  var mine = currentAccount();
+  if(mine && normalizeEmail(mine.email) === normalizeEmail(account.email)) signOut();
+  if(adminAcctOpen === account.email) adminAcctOpen = null;
+  adminAcctNote = 'Deleted ' + account.name + '.';
+  renderAdminAccounts();
+}
+function adminAcctPanelHtml(a){
+  var isPastor = a.role === 'pastor';
+  var fullyVerified = a.verified && (!isPastor || a.churchVerified);
+  return '<div class="admin-acct-panel">'+
+    (isPastor
+      ? '<div class="auth-field"><label for="adLink-'+escapeHtml(a.email)+'">Church listing</label>'+
+          '<select id="adLink-'+escapeHtml(a.email)+'" data-link="'+escapeHtml(a.email)+'">'+
+            '<option value="">'+(a.churchId ? 'Change listing…' : 'Choose a listing…')+'</option>'+
+            SEED_CHURCHES.map(function(s){
+              return '<option value="'+escapeHtml(s.id)+'"'+(s.id===a.churchId?' selected':'')+'>'+escapeHtml(s.name)+'</option>';
+            }).join('')+
+          '</select></div>'
+      : '')+
+    '<div class="admin-acct-btns">'+
+      '<button class="account-btn primary" data-act="signin" data-email="'+escapeHtml(a.email)+'">Sign in as</button>'+
+      (fullyVerified
+        ? ''
+        : '<button class="account-btn" data-act="verify" data-email="'+escapeHtml(a.email)+'">Force verify</button>')+
+      '<button class="account-btn" data-act="role" data-email="'+escapeHtml(a.email)+'">'+
+        (isPastor ? 'Make attendee' : 'Make pastor')+'</button>'+
+      '<button class="account-btn danger" data-act="delete" data-email="'+escapeHtml(a.email)+'">Delete</button>'+
+    '</div>'+
+    '<p class="admin-acct-warn">“Sign in as” switches THIS tab to that account and still respects verification — an unverified account lands on the confirmation screen, same as a real sign-in.</p>'+
+  '</div>';
+}
 function renderAdminAccounts(){
   var body = document.getElementById('adminAccountsBody');
   if(!isAdminMode()){ location.hash = 'admin'; return; }
@@ -6865,6 +7030,9 @@ function renderAdminAccounts(){
           : '')+
         '<div class="admin-acct-meta">Joined '+escapeHtml(created)+' &middot; '+threadCount+
           ' conversation'+(threadCount===1?'':'s')+'</div>'+
+        '<button class="admin-acct-manage" data-manage="'+escapeHtml(a.email)+'">'+
+          (adminAcctOpen === a.email ? 'Hide actions' : 'Manage')+'</button>'+
+        (adminAcctOpen === a.email ? adminAcctPanelHtml(a) : '')+
       '</div>'+
     '</div>';
   }).join('');
@@ -6879,14 +7047,48 @@ function renderAdminAccounts(){
         ? rows
         : '<p class="auth-hint" style="margin:6px 0 0;">No accounts yet in this browser. Create one from the sign-up page and it will appear here.</p>')+
     '</div>'+
+    (adminAcctNote ? '<p class="auth-note success" id="adAcctNote">'+escapeHtml(adminAcctNote)+'</p>' : '')+
     '<p class="auth-hint" style="margin-top:16px;">Accounts are stored in this browser’s local storage, so this lists the ones created here — not everyone who has ever signed up. A real user list needs a server behind the app.</p>'+
     '<div class="account-actions" style="margin-top:18px;">'+
       '<button class="account-btn" id="adAcctRefresh">Refresh</button>'+
       '<button class="account-btn" id="adAcctBack">Back to admin</button>'+
     '</div>';
 
-  document.getElementById('adAcctRefresh').addEventListener('click', renderAdminAccounts);
+  document.getElementById('adAcctRefresh').addEventListener('click', function(){
+    adminAcctNote = null;
+    renderAdminAccounts();
+  });
   document.getElementById('adAcctBack').addEventListener('click', function(){ location.hash = 'admin'; });
+
+  body.querySelectorAll('[data-manage]').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var email = btn.getAttribute('data-manage');
+      adminAcctOpen = (adminAcctOpen === email) ? null : email;
+      adminAcctNote = null;
+      renderAdminAccounts();
+    });
+  });
+  // Every action re-reads the account from storage rather than closing over the
+  // row's object, so two tabs editing the same person can't write back a stale
+  // copy of the record.
+  body.querySelectorAll('[data-act]').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var account = findAccount(btn.getAttribute('data-email'));
+      if(!account){ adminAcctNote = 'That account no longer exists.'; renderAdminAccounts(); return; }
+      var act = btn.getAttribute('data-act');
+      if(act === 'signin') return adminSignInAs(account);
+      if(act === 'verify') return adminForceVerify(account);
+      if(act === 'role') return adminSetRole(account, account.role === 'pastor' ? 'attendee' : 'pastor');
+      if(act === 'delete') return adminDeleteAccount(account);
+    });
+  });
+  body.querySelectorAll('[data-link]').forEach(function(sel){
+    sel.addEventListener('change', function(){
+      if(!sel.value) return;
+      var account = findAccount(sel.getAttribute('data-link'));
+      if(account) adminLinkChurch(account, sel.value);
+    });
+  });
 }
 function submitAdminLogin(){
   var note = document.getElementById('adNote');
