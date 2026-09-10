@@ -655,6 +655,26 @@
     not hammered on every request.
 
   ===== CHANGE LOG (most recent first) =====
+  - CRITICAL FIX: the ENTIRE SITE was broken — visitors saw this very dev-note
+    comment block rendered as raw visible page text instead of the app. Root
+    cause: the previous "DEPLOY FIX" change-log entry (below) literally
+    spelled out the HTML comment open+close markers as a text example inside
+    this comment, and the closing marker in that example prematurely ended
+    the giant CLAUDE DEV NOTE comment that wraps this whole section, so
+    every character between that point and the next real tag got parsed as
+    ordinary body text — self-inflicted, not a Netlify or hosting issue.
+    Reproduced directly in a real Chromium browser (not just node --check,
+    which can't catch this — it's an HTML parsing bug, not a JS syntax
+    error) and confirmed the fix restores the actual app. Rewrote that
+    example to avoid spelling out the literal marker, then grepped the whole
+    file for it to confirm no other comment block has the same landmine.
+    LESSON, stated carefully so this note doesn't repeat the mistake itself:
+    never spell out the HTML comment close marker (hyphen hyphen
+    greater-than) inside this comment, even as a documentation example —
+    describe it in words instead. Full Playwright regression suite re-run
+    after the fix, all 29 checks pass, and a fresh headless-browser load
+    confirms the real IC-1 landing page renders (previously it rendered the
+    dev notes as text).
   - DEPLOY FIX: added SECRETS_SCAN_OMIT_PATHS = "index.html" to netlify.toml.
     Reported symptom: pushes to main kept landing on GitHub (confirmed with
     git diff origin/main main == empty) but never appeared on the live
@@ -694,8 +714,8 @@
     leftover duplicated HTML comment prefix on the DN-1 section marker.
     Deliberately LEFT UNTOUCHED: the embedded CHURCH_DATA/LOCAL_CHURCHES
     dataset (real OSM church names like "Saint Martha's Catholic Church" —
-    external data, not this app's prose) and developer // and <!-- -->
-    comments (not user-facing, and several intentionally quote old broken
+    external data, not this app's prose) and developer // and HTML-comment
+    notes (not user-facing, and several intentionally quote old broken
     syntax as documentation). Re-ran the full Playwright regression suite
     (pastor verification, admin test-email override, admin master login,
     forgot-password/account-enumeration, delete-conversation) after the
