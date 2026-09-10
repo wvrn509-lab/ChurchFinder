@@ -756,6 +756,53 @@
   implying reach it doesn't have. Keep that note if you restyle the page.
 
   ===== CHANGE LOG (most recent first) =====
+  - CHURCH CLAIMING extended from the 4 curated SEED_CHURCHES to the full
+    ~3146-entry LOCAL_CHURCHES directory, per explicit request: a pastor
+    picks their real listing from a searchable type-to-filter picker at
+    signup (or later from AC-1/AD-2) instead of a giant flat dropdown, and
+    that account is permanently linked to that listing's id. LOCAL_CHURCHES
+    entries now carry a stable id (LC-<array index> — safe only because the
+    embedded dataset is append-only across sessions, see the dev note on
+    that array). New wireChurchPicker() widget (search box + results list,
+    imperatively managed so a keystroke never forces a parent-page
+    re-render) reused identically at AU-1 signup, AC-1 self-link, and AD-2
+    admin relink. Duplicate claims are blocked (churchAlreadyClaimed()) at
+    both the picker (greyed out, tagged Claimed) and submit time, except
+    admin relink, which allows a deliberate reassignment behind a
+    window.confirm(). Messaging (contact button, CV-1 header/labels,
+    typing indicator, PI-1) now works off ANY claimed church via
+    pastorAccountFor()/pastorNameFor(), not just the one seed that had a
+    hardcoded pastor name.
+  - FIXED A REAL DEAD END the above surfaced at scale: isPastorFullyVerified()
+    required churchVerified===true for every pastor with a churchId, but
+    churchEmailForAccount() returns null for the vast majority of
+    LOCAL_CHURCHES (OSM data rarely includes an email), which would have
+    permanently blocked those pastors' PI-1 access with no way out. Fixed
+    by treating a claimed church with no email on file as having nothing to
+    verify — isPastorFullyVerified()/verifyStageFor() now skip the church
+    stage in that case, mirroring how an attendee already skips it
+    entirely. AC-1's “verify church affiliation” card and account-row badge
+    are gated the same way (canVerifyChurch), so they only appear when
+    there is actually something to verify.
+  - FIXED A RE-RENDER RACE that would have made every one of the pickers
+    above feel broken: geocodeSeeds()'s progress callback re-triggers
+    routeFromHash() repeatedly for about a second after any page load,
+    and routeFromHash()'s signin/signup, #account and #admin-accounts
+    branches previously called setView() — and therefore a full
+    re-render — unconditionally on every call, tearing down an
+    in-progress picker's <input> mid-typing (losing both the typed text
+    and focus). All three branches now skip the redundant re-render when
+    already sitting on that exact view, mirroring the existing
+    currentDetailId guard on showDetail().
+  - ADDED AN ALWAYS-VISIBLE HOME BUTTON, top right (the favicon, a circular
+    button left of the account pill), routing straight to #landing from
+    anywhere. .acct-pill's right offset shifted from 16px to 66px to
+    permanently reserve its space.
+  - ADDED SHORT ACCOUNT IDs (acctId, e.g. U-7K3QM) so a specific account can
+    be referenced unambiguously — generated once at account creation,
+    backfilled for pre-existing accounts on loadAccounts(), shown on AD-2
+    rows and the AC-1 account card. AD-2 pastor rows with no churchId also
+    get a “Not linked” warning badge.
   - ADDED THE FOUR AD-2 ADMIN ACTIONS the user picked after seeing the
     read-only list: sign in as, force verify, change role / relink church, and
     delete. Behind a per-row "Manage" toggle so the page still reads as a list.
@@ -2616,6 +2663,15 @@
   .admin-acct:last-child{ border-bottom:none; }
   .admin-acct-main{ min-width:0; flex:1; }
   .admin-acct-name{ font-size:14.5px; font-weight:600; color:var(--parchment); }
+  /* Short account-ID chip (see makeAcctId dev note) so a specific account can
+     be referenced unambiguously — next to the name here, and again on the
+     account's own AC-1 card. */
+  .acct-id-chip{
+    display:inline-block; margin-left:7px; padding:1px 7px; border-radius:10px;
+    background:rgba(255,255,255,0.08); color:#8A93AC;
+    font-family:'Inter',monospace; font-size:10.5px; font-weight:600; letter-spacing:0.03em;
+    vertical-align:1px;
+  }
   .admin-acct-email{ font-size:12.5px; color:#8A93AC; word-break:break-all; margin-top:1px; }
   .admin-acct-bio{ font-size:12.5px; color:#C7CCDA; margin-top:6px; white-space:pre-wrap; word-break:break-word; }
   .admin-acct-tags{ display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
@@ -2830,6 +2886,44 @@
   .auth-field input::placeholder{ color:#8A93AC; }
   .auth-field input:focus, .auth-field select:focus{ outline:2px solid var(--brass); outline-offset:1px; }
   .auth-field select option{ background:#14213D; color:var(--parchment); }
+  /* Church-claim search picker (wireChurchPicker) — reused at AU-1 signup,
+     AC-1 self-link, and AD-2 admin relink. */
+  .church-picker-input{
+    width:100%; height:46px; box-sizing:border-box;
+    border:1px solid rgba(255,255,255,0.16); border-radius:8px; padding:0 14px;
+    font-family:'Inter',sans-serif; font-size:14px;
+    background:rgba(255,255,255,0.06); color:var(--parchment);
+  }
+  .church-picker-input::placeholder{ color:#8A93AC; }
+  .church-picker-input:focus{ outline:2px solid var(--brass); outline-offset:1px; }
+  .church-picker-results{ margin-top:8px; max-height:220px; overflow-y:auto; }
+  .church-picker-row{
+    padding:9px 12px; border-radius:8px; cursor:pointer;
+    border:1px solid transparent;
+  }
+  .church-picker-row:hover{ background:rgba(255,255,255,0.06); border-color:rgba(255,255,255,0.12); }
+  .church-picker-row.taken{ cursor:not-allowed; opacity:0.55; }
+  .church-picker-row-name{ font-size:13.5px; font-weight:600; color:var(--parchment); }
+  .church-picker-row-addr{ font-size:11.5px; color:#8A93AC; margin-top:2px; }
+  .church-picker-row-tag{
+    display:inline-block; margin-left:6px; padding:1px 7px; border-radius:10px;
+    background:rgba(224,138,138,0.18); color:#E08A8A;
+    font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em;
+  }
+  .church-picker-empty{ font-size:12.5px; color:#8A93AC; padding:9px 12px; }
+  .church-picker-selected{
+    display:flex; align-items:center; gap:10px; justify-content:space-between;
+    border:1px solid rgba(255,255,255,0.16); border-radius:8px; padding:10px 14px;
+    background:rgba(255,255,255,0.06);
+  }
+  .church-picker-selected-name{ font-size:13.5px; font-weight:600; color:var(--parchment); }
+  .church-picker-selected-addr{ font-size:11.5px; color:#8A93AC; margin-top:2px; }
+  .church-picker-change{
+    flex:none; background:none; border:1px solid rgba(255,255,255,0.2); border-radius:8px;
+    padding:6px 12px; cursor:pointer; color:var(--parchment);
+    font-family:'Inter',sans-serif; font-size:12px; font-weight:600;
+  }
+  .church-picker-change:hover{ border-color:var(--brass); color:var(--brass); }
   .auth-hint{ font-size:11.5px; color:#8A93AC; margin:6px 0 0; }
   .auth-roles{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:16px; }
   .auth-role{
@@ -2901,7 +2995,7 @@
   /* Persistent top-right account pill — the way in and out of an account from
      anywhere. Mirrors .page-id-fixed but is clickable. */
   .acct-pill{
-    position:fixed; top:14px; right:16px; z-index:9998;
+    position:fixed; top:14px; right:66px; z-index:9998;
     display:inline-flex; align-items:center; gap:8px;
     height:34px; padding:0 14px; border-radius:20px; cursor:pointer;
     background:rgba(10,10,10,0.72); border:1px solid rgba(255,255,255,0.18);
@@ -2910,6 +3004,19 @@
   }
   .acct-pill:hover{ border-color:var(--brass); color:var(--brass); }
   .acct-pill-dot{ width:7px; height:7px; border-radius:50%; background:var(--brass); flex:none; }
+  /* Always-visible home button (top right, left of .acct-pill — .acct-pill's
+     right offset is permanently shifted to 66px above to reserve this
+     button's space unconditionally, rather than a fragile :has() selector).
+     Routes straight to #landing regardless of sign-in state or current page. */
+  .home-btn{
+    position:fixed; top:14px; right:16px; z-index:9999;
+    width:34px; height:34px; border-radius:50%; padding:0;
+    display:inline-flex; align-items:center; justify-content:center;
+    background:rgba(10,10,10,0.72); border:1px solid rgba(255,255,255,0.18);
+    cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,0.25);
+  }
+  .home-btn:hover{ border-color:var(--brass); }
+  .home-btn img{ width:20px; height:20px; display:block; border-radius:4px; }
 
   @media (max-width:760px){
     .gate-choices{ grid-template-columns:1fr; }
@@ -2974,6 +3081,10 @@
      renderAcctPill(): signed out -> "Sign in" -> #signin; signed in -> the
      account's display name -> #account. -->
 <button class="acct-pill" id="acctPill" style="display:none;"></button>
+
+<!-- Always-visible home button (top right, left of the account pill).
+     Routes to #landing unconditionally. -->
+<button class="home-btn" id="homeBtn" title="Go back to home page?"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAAYFBMVEXGsBAZJDVZWSqVm6FMVmPf4eARHjYQIEGsnRv03g11bGojJ007RlcfLEEvNy4THzMAAP8/QztfXz95gY0TIToJFzT8/Pz62gEAAAArN0qxpCspMzZudYPq6dhrc3zEyMlMassNAAAAIHRSTlP/of///v/g////CSj/njtAAUAI//7+/v8A/////////9kvG1cAAAE9SURBVHjaxZPJloQgDEWDIopD9UQAh9b//8tOZLKO1Yte9Vt4Ark8iBDwpGFSJgoxRWoaOAfe95Mp6XEsiBGfDPSq5FVtbW0y0Yp+AC/K8r2xpEYWE+FhyGl5cJaZoyADRAOca05/oakZqedICFBh+ZanI7oFEwXFPRk/Dwkg13w0xPANhlwPkGUeGKy6rjqDsIi2JID8jvh7ELRe4j4jzxOAkpanqhCc61KMZCIRcLM21XQCSx60jd1P4HvNc90FMGYe2wvABTDQqVBKvNoCVKSVtgAOquySAFzdk/Kx/gAsQNLO6YV1A+h1kM4qWqTgdoaXZb4A4F8AxYD5FVAg6Lrl+ftZN0DAY+bnNkfdgAc1Dj+uJK3zg0mNQ613IbTTVwduvXffC7kn8U1fmrc/u9v7N5FPibnplPjg3A+eG0yzp9Zy4AAAAABJRU5ErkJggg==" alt=""></button>
 
 <!-- Admin-mode marker (top-left). Hidden by default; shown only after a
      successful #admin sign-in, toggled by applyAdminVisual(). See dev note
@@ -3625,8 +3736,18 @@ var CHURCH_DATA = {"center":{"lat":34.4127963,"lon":-118.5538088},"radiusMeters"
 var GAZETTEER = {"temple city":[34.09909,-118.06607],"temple city, ca":[34.09909,-118.06607],"alhambra":[34.08563,-118.13946],"alhambra, ca":[34.08563,-118.13946],"west covina":[34.07096,-117.92881],"west covina, ca":[34.07096,-117.92881],"monrovia":[34.1472,-118.00452],"monrovia, ca":[34.1472,-118.00452],"downey":[33.93761,-118.13248],"downey, ca":[33.93761,-118.13248],"san marino":[34.1239,-118.10029],"san marino, ca":[34.1239,-118.10029],"los angeles":[34.04237,-118.29592],"los angeles, ca":[34.04237,-118.29592],"long beach":[33.81124,-118.17132],"long beach, ca":[33.81124,-118.17132],"glendale":[34.15669,-118.25221],"glendale, ca":[34.15669,-118.25221],"fillmore":[34.40246,-118.924],"fillmore, ca":[34.40246,-118.924],"ventura":[34.28174,-119.24299],"ventura, ca":[34.28174,-119.24299],"santa paula":[34.36128,-119.06729],"santa paula, ca":[34.36128,-119.06729],"simi valley":[34.27321,-118.74352],"simi valley, ca":[34.27321,-118.74352],"oxnard":[34.18788,-119.18164],"oxnard, ca":[34.18788,-119.18164],"port hueneme":[34.16274,-119.19398],"port hueneme, ca":[34.16274,-119.19398],"montebello":[34.01094,-118.1198],"montebello, ca":[34.01094,-118.1198],"pico rivera":[33.96554,-118.09831],"pico rivera, ca":[33.96554,-118.09831],"south pasadena":[34.11118,-118.14412],"south pasadena, ca":[34.11118,-118.14412],"monterey park":[34.04705,-118.14048],"monterey park, ca":[34.04705,-118.14048],"arcadia":[34.1232,-118.05476],"arcadia, ca":[34.1232,-118.05476],"la habra":[33.92248,-117.94371],"la habra, ca":[33.92248,-117.94371],"sherman oak":[34.1675,-118.46694],"sherman oak, ca":[34.1675,-118.46694],"van nuys":[34.19269,-118.45232],"van nuys, ca":[34.19269,-118.45232],"granada hills":[34.27705,-118.49962],"granada hills, ca":[34.27705,-118.49962],"tujunga":[34.25339,-118.28967],"tujunga, ca":[34.25339,-118.28967],"el monte":[34.06481,-118.02805],"el monte, ca":[34.06481,-118.02805],"south el monte":[34.04575,-118.04095],"south el monte, ca":[34.04575,-118.04095],"burbank":[34.18672,-118.31387],"burbank, ca":[34.18672,-118.31387],"bellflower":[33.88964,-118.13182],"bellflower, ca":[33.88964,-118.13182],"norwalk":[33.90861,-118.08085],"norwalk, ca":[33.90861,-118.08085],"la mirada":[33.91318,-118.01468],"la mirada, ca":[33.91318,-118.01468],"whittier":[33.9582,-118.0252],"whittier, ca":[33.9582,-118.0252],"lancaster":[34.68979,-118.1355],"lancaster, ca":[34.68979,-118.1355],"westlake village":[34.14905,-118.82527],"westlake village, ca":[34.14905,-118.82527],"pasadena":[34.13834,-118.13612],"pasadena, ca":[34.13834,-118.13612],"lakewood":[33.8622,-118.13454],"lakewood, ca":[33.8622,-118.13454],"torrance":[33.81877,-118.33481],"torrance, ca":[33.81877,-118.33481],"cayon country":[34.41996,-118.45463],"cayon country, ca":[34.41996,-118.45463],"north hollywood":[34.1843,-118.38956],"north hollywood, ca":[34.1843,-118.38956],"west hollywood":[34.08954,-118.38555],"west hollywood, ca":[34.08954,-118.38555],"camarillo":[34.22529,-119.02704],"camarillo, ca":[34.22529,-119.02704],"encino":[34.16332,-118.5207],"encino, ca":[34.16332,-118.5207],"hacienda heights":[33.99156,-117.9701],"hacienda heights, ca":[33.99156,-117.9701],"newhall":[34.38085,-118.52598],"newhall, ca":[34.38085,-118.52598],"san pedro":[33.73876,-118.28641],"san pedro, ca":[33.73876,-118.28641],"little bangladesh":[34.06891,-118.29717],"little bangladesh, ca":[34.06891,-118.29717],"wilshire center":[34.0763,-118.2981],"wilshire center, ca":[34.0763,-118.2981],"tehachapi":[35.13509,-118.57619],"tehachapi, ca":[35.13509,-118.57619],"cerritos":[33.87059,-118.07854],"cerritos, ca":[33.87059,-118.07854],"valencia":[34.44134,-118.60424],"valencia, ca":[34.44134,-118.60424],"walnut":[34.03112,-117.88874],"walnut, ca":[34.03112,-117.88874],"rosemead":[34.04245,-118.08856],"rosemead, ca":[34.04245,-118.08856],"malibu":[34.03387,-118.76791],"malibu, ca":[34.03387,-118.76791],"pine mountain club":[34.84951,-119.16639],"pine mountain club, ca":[34.84951,-119.16639],"rowland heights":[33.97772,-117.91143],"rowland heights, ca":[33.97772,-117.91143],"lake view terrace":[34.27242,-118.34408],"lake view terrace, ca":[34.27242,-118.34408],"cypress":[33.82505,-118.04295],"cypress, ca":[33.82505,-118.04295],"ojai":[34.44363,-119.26675],"ojai, ca":[34.44363,-119.26675],"rosamond":[34.8695,-118.1736],"rosamond, ca":[34.8695,-118.1736],"santa clarita":[34.44524,-118.54707],"santa clarita, ca":[34.44524,-118.54707],"artesia":[33.86129,-118.07188],"artesia, ca":[33.86129,-118.07188],"rancho palos verdes":[33.75967,-118.39534],"rancho palos verdes, ca":[33.75967,-118.39534],"wilmington":[33.79232,-118.28232],"wilmington, ca":[33.79232,-118.28232],"topanga":[34.09197,-118.60733],"topanga, ca":[34.09197,-118.60733],"marina del rey":[33.98689,-118.44503],"marina del rey, ca":[33.98689,-118.44503],"el segundo":[33.92229,-118.40994],"el segundo, ca":[33.92229,-118.40994],"beverly hills":[34.07028,-118.40656],"beverly hills, ca":[34.07028,-118.40656],"san dimas":[34.09874,-117.83635],"san dimas, ca":[34.09874,-117.83635],"sylmar":[34.31336,-118.44521],"sylmar, ca":[34.31336,-118.44521],"northridge":[34.22914,-118.52728],"northridge, ca":[34.22914,-118.52728],"north hills":[34.2327,-118.4739],"north hills, ca":[34.2327,-118.4739],"mission hills":[34.25599,-118.46409],"mission hills, ca":[34.25599,-118.46409],"reseda":[34.20586,-118.55417],"reseda, ca":[34.20586,-118.55417],"winnetka":[34.22485,-118.58443],"winnetka, ca":[34.22485,-118.58443],"pacoima":[34.26814,-118.41529],"pacoima, ca":[34.26814,-118.41529],"san fernando":[34.28598,-118.43992],"san fernando, ca":[34.28598,-118.43992],"porter ranch":[34.2642,-118.53509],"porter ranch, ca":[34.2642,-118.53509],"panorama city":[34.22509,-118.44561],"panorama city, ca":[34.22509,-118.44561],"chatsworth":[34.2581,-118.58875],"chatsworth, ca":[34.2581,-118.58875],"tarzana":[34.17403,-118.52771],"tarzana, ca":[34.17403,-118.52771],"sun valley":[34.22108,-118.42214],"sun valley, ca":[34.22108,-118.42214],"sunland":[34.25634,-118.30229],"sunland, ca":[34.25634,-118.30229],"la crescenta":[34.23257,-118.26884],"la crescenta, ca":[34.23257,-118.26884],"redondo beach":[33.84864,-118.38221],"redondo beach, ca":[33.84864,-118.38221],"inglewood":[33.95312,-118.32335],"inglewood, ca":[33.95312,-118.32335],"santa monica":[34.02167,-118.47429],"santa monica, ca":[34.02167,-118.47429],"hawaiian gardens":[33.83564,-118.07566],"hawaiian gardens, ca":[33.83564,-118.07566],"manhattan beach":[33.88446,-118.39828],"manhattan beach, ca":[33.88446,-118.39828],"south gate":[33.95755,-118.21833],"south gate, ca":[33.95755,-118.21833],"compton":[33.89561,-118.25278],"compton, ca":[33.89561,-118.25278],"paramount":[33.89004,-118.16404],"paramount, ca":[33.89004,-118.16404],"lynwood":[33.92148,-118.2019],"lynwood, ca":[33.92148,-118.2019],"cudahy":[33.96234,-118.18922],"cudahy, ca":[33.96234,-118.18922],"rancho dominguez":[33.8948,-118.26176],"rancho dominguez, ca":[33.8948,-118.26176],"agoura hills":[34.15151,-118.74527],"agoura hills, ca":[34.15151,-118.74527],"la verne":[34.10543,-117.76369],"la verne, ca":[34.10543,-117.76369],"pomona":[34.05506,-117.80008],"pomona, ca":[34.05506,-117.80008],"covina":[34.09787,-117.8612],"covina, ca":[34.09787,-117.8612],"val verde":[34.44633,-118.65856],"val verde, ca":[34.44633,-118.65856],"littlerock":[34.5208,-117.98839],"littlerock, ca":[34.5208,-117.98839],"palmdale":[34.57518,-118.11782],"palmdale, ca":[34.57518,-118.11782],"buena park":[33.86427,-117.99156],"buena park, ca":[33.86427,-117.99156],"thousand oaks":[34.20661,-118.87729],"thousand oaks, ca":[34.20661,-118.87729],"glendora":[34.14972,-117.87902],"glendora, ca":[34.14972,-117.87902],"gardena":[33.86593,-118.30236],"gardena, ca":[33.86593,-118.30236],"91780":[34.10084,-118.06381],"91801":[34.09674,-118.13281],"91790":[34.07096,-117.92881],"91016":[34.1494,-118.00293],"90242":[33.92173,-118.14018],"91108":[34.1239,-118.10029],"90501":[33.82248,-118.3203],"90019":[34.04739,-118.32089],"91202":[34.16102,-118.26392],"90807":[33.79368,-118.18742],"93561":[35.13372,-118.53526],"93015":[34.40246,-118.924],"93001":[34.28024,-119.28224],"93004":[34.28193,-119.16711],"93060":[34.36084,-119.06751],"93065":[34.26856,-118.77537],"93063":[34.27889,-118.7046],"93033":[34.16824,-119.17215],"93041":[34.16134,-119.18857],"93030":[34.20096,-119.18797],"90037":[34.00563,-118.28297],"90018":[34.02529,-118.3198],"90005":[34.05835,-118.28896],"90027":[34.10316,-118.29204],"90057":[34.06495,-118.27721],"90004":[34.0746,-118.30163],"90020":[34.06948,-118.30592],"90043":[33.98868,-118.34425],"90044":[33.9601,-118.28789],"90640":[34.01094,-118.1198],"90660":[33.96554,-118.09831],"91030":[34.11118,-118.14412],"90042":[34.11332,-118.19332],"91754":[34.04705,-118.14048],"90033":[34.05279,-118.22063],"90016":[34.0294,-118.34995],"90744":[33.79005,-118.26644],"91205":[34.13365,-118.25327],"91206":[34.15038,-118.22828],"91007":[34.1232,-118.05476],"90631":[33.92755,-117.94472],"91011":[34.20083,-118.19306],"91411":[34.1675,-118.46694],"91405":[34.2015,-118.45175],"91344":[34.27705,-118.49962],"91042":[34.25339,-118.28967],"91722":[34.10722,-117.88278],"91733":[34.05482,-118.042],"91502":[34.17536,-118.30378],"90066":[33.99865,-118.44798],"90025":[34.04191,-118.45169],"90706":[33.88964,-118.13182],"90650":[33.90861,-118.08085],"90638":[33.91318,-118.01468],"90604":[33.92929,-118.00327],"93534":[34.69017,-118.14647],"90045":[33.97495,-118.39054],"91361":[34.14905,-118.82527],"91105":[34.12548,-118.17622],"90712":[33.8622,-118.13454],"91351":[34.41996,-118.45463],"90008":[34.00376,-118.32342],"91601":[34.17496,-118.36127],"90731":[33.73841,-118.28977],"90062":[34.00391,-118.3129],"90069":[34.08954,-118.38555],"91504":[34.20614,-118.34145],"93010":[34.23072,-119.0493],"91745":[33.99696,-117.96488],"93003":[34.28887,-119.19851],"90013":[34.04657,-118.24059],"91316":[34.16332,-118.5207],"93536":[34.68978,-118.19211],"90012":[34.05636,-118.24043],"90059":[33.91984,-118.24657],"91321":[34.38421,-118.52805],"90241":[33.94011,-118.12803],"93535":[34.69378,-118.09306],"90039":[34.09783,-118.24705],"90601":[33.98006,-118.03412],"90703":[33.86872,-118.07568],"91006":[34.15131,-118.03283],"90011":[34.00099,-118.25881],"91355":[34.44596,-118.59152],"91104":[34.1575,-118.13974],"91789":[34.03112,-117.88874],"91770":[34.04245,-118.08856],"90265":[34.03387,-118.76791],"93222":[34.84951,-119.16639],"91748":[33.97772,-117.91143],"90505":[33.79894,-118.34871],"90805":[33.85432,-118.19066],"90630":[33.82505,-118.04295],"90808":[33.81925,-118.12214],"90806":[33.80877,-118.15535],"91501":[34.18514,-118.30556],"93023":[34.44363,-119.26675],"93560":[34.86662,-118.1716],"91350":[34.43989,-118.51534],"90035":[34.05417,-118.37766],"90701":[33.86129,-118.07188],"90002":[33.94459,-118.24595],"90275":[33.75967,-118.39534],"90047":[33.9748,-118.30192],"90290":[34.09197,-118.60733],"90292":[33.98689,-118.44503],"90026":[34.07323,-118.26625],"90245":[33.92229,-118.40994],"90038":[34.09198,-118.31776],"90028":[34.09851,-118.33511],"90210":[34.07028,-118.40656],"90015":[34.04305,-118.27758],"91773":[34.09874,-117.83635],"90006":[34.04608,-118.29129],"90010":[34.0613,-118.29453],"90065":[34.11568,-118.2365],"90023":[34.03352,-118.21573],"90063":[34.04832,-118.18255],"90048":[34.05894,-118.36845],"91322":[34.37413,-118.52183],"91342":[34.31336,-118.44521],"91325":[34.22623,-118.52375],"91343":[34.2327,-118.4739],"91345":[34.25572,-118.46515],"91335":[34.20586,-118.55417],"91306":[34.22485,-118.58443],"91331":[34.26814,-118.41529],"91340":[34.28803,-118.43691],"91402":[34.22509,-118.44561],"91311":[34.2581,-118.58875],"91356":[34.17403,-118.52771],"91605":[34.19364,-118.41784],"91352":[34.22108,-118.42214],"91040":[34.25634,-118.30229],"91214":[34.23257,-118.26884],"91101":[34.14432,-118.13934],"90277":[33.84375,-118.38696],"90303":[33.94579,-118.32799],"90404":[34.02934,-118.48324],"90405":[34.014,-118.46534],"90813":[33.78844,-118.17173],"90802":[33.77076,-118.17916],"90716":[33.83564,-118.07566],"90266":[33.88446,-118.39828],"90278":[33.87409,-118.3797],"90503":[33.83862,-118.36614],"90240":[33.96179,-118.12867],"90280":[33.95755,-118.21833],"90220":[33.8954,-118.25503],"90723":[33.89004,-118.16404],"90262":[33.92148,-118.2019],"90201":[33.96234,-118.18922],"90605":[33.95292,-118.02371],"91301":[34.15151,-118.74527],"91750":[34.10402,-117.76453],"91208":[34.17145,-118.23121],"91768":[34.05506,-117.80008],"91732":[34.06527,-118.02055],"91724":[34.09787,-117.8612],"91803":[34.06341,-118.15275],"91776":[34.09386,-118.07285],"90602":[33.97583,-118.04117],"91201":[34.17254,-118.28065],"91204":[34.14002,-118.2574],"91384":[34.44633,-118.65856],"93543":[34.5208,-117.98839],"90621":[33.86427,-117.99156],"91360":[34.20661,-118.87729],"91741":[34.14972,-117.87902],"91324":[34.22074,-118.55846],"93012":[34.21536,-119.01609],"90305":[33.96044,-118.31872],"93043":[34.16413,-119.1994],"saugus":[34.415,-118.539],"saugus, ca":[34.415,-118.539],"canyon country":[34.42,-118.44],"canyon country, ca":[34.42,-118.44],"stevenson ranch":[34.39,-118.61],"stevenson ranch, ca":[34.39,-118.61],"castaic":[34.48917,-118.62306],"castaic, ca":[34.48917,-118.62306],"sherman oaks":[34.15112,-118.44925],"sherman oaks, ca":[34.15112,-118.44925],"studio city":[34.13945,-118.38618],"studio city, ca":[34.13945,-118.38618],"woodland hills":[34.16833,-118.60528],"woodland hills, ca":[34.16833,-118.60528],"santa monica, ca, ca":[34.01945,-118.49119],"91354":[34.448,-118.565],"91387":[34.41,-118.42],"91390":[34.48,-118.55],"91381":[34.385,-118.62],"91355-0000":[34.429,-118.585],"93510":[34.49,-118.2],"91326":[34.28,-118.555],"91307":[34.195,-118.635],"91367":[34.17,-118.6],"91364":[34.155,-118.595],"91403":[34.15,-118.455],"91423":[34.145,-118.425],"91604":[34.14,-118.395],"91505":[34.18,-118.325]};
 
 // Rehydrate the compact records into the shape the rest of the app expects.
-var LOCAL_CHURCHES = CHURCH_DATA.churches.map(function(r){
+// Stable, permanent claimable IDs (LC-<array index>), added per user request so
+// a pastor can "claim" a listing from the full directory (not just the 4
+// SEED_CHURCHES) and have that claim survive reloads. Safe ONLY because
+// CHURCH_DATA.churches is append-only across sessions — the array's order (and
+// therefore each entry's index) never changes once shipped. If the embedded
+// dataset is ever reordered or spliced (rather than only appended to), every
+// existing claim tied to an LC-n id would silently point at the wrong church.
+// See CLAIMABLE_ID_RE / isClaimableChurchId below for how this is distinguished
+// from the ephemeral R-n ids assigned to live (Overpass-only) search results.
+var LOCAL_CHURCHES = CHURCH_DATA.churches.map(function(r, idx){
   return {
+    id:'LC-'+idx,
     name:r.n||'Unnamed church', denom:r.dn||'', g:r.g||'',
     lat:r.a, lon:r.o,
     address:r.ad||'', phone:r.p||'', website:r.w||'', email:r.e||'',
@@ -3755,7 +3876,11 @@ function renderResults(center, places, notice, inRadius, matchedCount){
   currentPlaces = places;
   var liveCounter = 1;
   places.forEach(function(p){
-    if(!p.featured){ p.id = 'R-'+liveCounter; liveCounter++; }
+    // Live/no-id results (Overpass top-up only) get a session-only R-n id,
+    // regenerated every search. Anything that already carries a stable id
+    // (FC-n seeds, LC-n embedded-directory entries) keeps it — overwriting it
+    // here would break claim/message routing, which looks churches up by id.
+    if(!p.featured && !p.id){ p.id = 'R-'+liveCounter; liveCounter++; }
   });
   var noticeTxt = '';
   if(notice === 'outside') noticeTxt = ' <span style="opacity:0.7;">· outside the built-in map area, checking live…</span>';
@@ -4048,7 +4173,7 @@ function applyFilters(){
     scanned++;
     if(!matchesFilter(c, denomFilter)) return;
     places.push({
-      name:c.name, denom:c.denom, g:c.g, lat:c.lat, lon:c.lon,
+      id:c.id, name:c.name, denom:c.denom, g:c.g, lat:c.lat, lon:c.lon,
       address:c.address, phone:c.phone, website:c.website, email:c.email,
       hours:c.hours, serviceTimes:c.serviceTimes, description:c.description,
       wheelchair:c.wheelchair, wikipedia:c.wikipedia, dist:dist
@@ -4217,7 +4342,7 @@ function setView(view){
   }
   // Leaving AC-1 abandons a half-finished profile edit, so coming back lands on
   // the profile itself rather than dropping straight into a stale editor.
-  if(currentView === 'account' && view !== 'account'){ resetProfileDraft(); }
+  if(currentView === 'account' && view !== 'account'){ resetProfileDraft(); acChurchPick = null; acChurchNote = null; }
   // Same for AD-2: an open action panel and a stale "Deleted X." confirmation
   // shouldn't still be sitting there next time the list is opened.
   if(currentView === 'adminAccounts' && view !== 'adminAccounts'){
@@ -4330,12 +4455,19 @@ function showDetail(id){
 
   var cardStyle = p.featured ? ' style="background:'+lighten(vColor,0.10)+';"' : '';
 
-  // Bottom-of-profile contact block. Rendered ONLY when the place carries a
-  // .pastor field (see SEED_CHURCHES FC-1) — every other church detail page is
-  // byte-for-byte what it was before. It's a link into CV-1, and it surfaces an
-  // unread count so a reply waiting for you is visible from the profile.
+  // Bottom-of-profile contact block. Rendered for ANY claimable church (FC-n
+  // seed or LC-n directory listing — see isClaimableChurchId), not just the
+  // one seed that happened to have a hardcoded .pastor field — a claimed
+  // church is messageable regardless of which 4 churches have curated data.
+  // It's a link into CV-1, and it surfaces an unread count so a reply
+  // waiting for you is visible from the profile.
   var contactBlock = '';
-  if(p.pastor){
+  if(isClaimableChurchId(p.id)){
+    var pastorAccountForP = loadAccounts().filter(function(a){
+      return a.role === 'pastor' && a.churchId === p.id;
+    })[0];
+    var pastorPlainName = pastorAccountForP ? pastorAccountForP.name : (p.pastor || '');
+    var pastorSuffix = pastorPlainName ? ' Pastor '+escapeHtml(pastorPlainName) : ' this church';
     var acct = currentAccount();
     var myT = THREADS.filter(function(t){
       if(t.churchId !== p.id) return false;
@@ -4346,10 +4478,10 @@ function showDetail(id){
     contactBlock =
       '<div class="cp-block" id="cpBlock">'+
         '<p class="cp-lead">'+(hasThread
-          ? 'Your conversation with Pastor '+escapeHtml(p.pastor)+'.'
-          : 'Have a question, or want someone to know you\u2019re coming?')+'</p>'+
+          ? 'Your conversation with'+pastorSuffix+'.'
+          : 'Have a question, or want someone to know you’re coming?')+'</p>'+
         '<button class="cp-btn" id="cpOpenBtn">'+
-          (hasThread ? 'Open your conversation' : 'Communicate with Pastor '+escapeHtml(p.pastor))+
+          (hasThread ? 'Open your conversation' : 'Message'+pastorSuffix)+
         '</button>'+
         (waiting ? '<span class="cp-unread">'+waiting+' new</span>' : '')+
       '</div>';
@@ -4376,7 +4508,7 @@ function showDetail(id){
 
   currentDetailId = id;
   document.getElementById('backBtn').addEventListener('click', function(){ location.hash='attendee'; });
-  if(p.pastor) wirePastorContact(p);
+  if(isClaimableChurchId(p.id)) wirePastorContact(p);
 
   if(detailMap){ detailMap.remove(); detailMap = null; }
   detailMap = L.map('detailMap', {scrollWheelZoom:false}).setView([p.lat,p.lon], 15);
@@ -4423,6 +4555,14 @@ function routeFromHash(){
   // gate instead of a list of accounts.
   if(hash === 'admin-accounts'){
     if(!isAdminMode()){ location.hash = 'admin'; return; }
+    // setView('adminAccounts') unconditionally calls renderAdminAccounts(),
+    // which tears down and rebuilds the whole page — including any open
+    // row's church-claim picker (see wireChurchPicker dev note). Harmless on
+    // a real navigation, but routeFromHash() also re-fires in the background
+    // for ~1s after any page load (geocodeSeeds()'s progress callback), which
+    // would otherwise reset an admin's in-progress relink pick mid-click.
+    // Same redundant-render guard as the signin/signup branch above.
+    if(currentView === 'adminAccounts') return;
     setView('adminAccounts'); return;
   }
   // ---- account routes (AU-1 / VF-1 / AC-1) ----
@@ -4430,8 +4570,19 @@ function routeFromHash(){
     // Arriving at AU-1 from anywhere else is a fresh start: clear the role choice
     // and any half-typed draft so nothing carries over from a previous sign-up.
     // (Switching tabs counts as arriving; that's fine and intentional.)
-    if(currentView !== 'auth'){ authSignupRole = null; authDraft = {}; }
-    authMode = (hash === 'signup') ? 'signup' : 'signin';
+    var freshArrival = currentView !== 'auth';
+    if(freshArrival){ authSignupRole = null; authDraft = {}; authChurchPick = null; authChurchOtherMode = false; }
+    var newAuthMode = (hash === 'signup') ? 'signup' : 'signin';
+    // setView('auth') unconditionally calls renderAuth(), which tears down and
+    // rebuilds the whole form — including the church picker's <input>. Harmless
+    // on a real navigation, but routeFromHash() also gets called repeatedly in
+    // the background for ~1s after every page load (geocodeSeeds()'s progress
+    // callback), which was destroying the picker's input mid-typing (losing
+    // both the typed text AND focus). Skip the redundant re-render when we're
+    // already sitting on this exact same auth screen — mirrors showDetail()'s
+    // currentDetailId guard above.
+    if(!freshArrival && authMode === newAuthMode) return;
+    authMode = newAuthMode;
     setView('auth'); return;
   }
   if(hash === 'verify'){
@@ -4448,6 +4599,10 @@ function routeFromHash(){
   }
   if(hash === 'account'){
     if(!currentAccount()){ requireAuth('account'); return; }
+    // Same redundant-render guard as signin/signup and admin-accounts above —
+    // without it, routeFromHash() re-firing in the background (geocodeSeeds())
+    // would tear down AC-1's church-claim picker mid-typing.
+    if(currentView === 'account') return;
     setView('account'); return;
   }
   // PI-1 is no longer wide open: it holds real people's messages, so it needs a
@@ -5211,6 +5366,12 @@ function renderChat(){
   // profile picture shows up in the conversation rather than only on AC-1.
   var themPerson = threadPerson(t, iAmPastor ? 'visitor' : 'pastor');
   var mePerson = threadPerson(t, iAmPastor ? 'pastor' : 'visitor');
+  // Prefers the real claiming pastor's account name over the thread's static
+  // .pastor flavor-text — see pastorNameFor() dev note. Kept as plain,
+  // unescaped text and escaped exactly once at each point of use below (this
+  // function used to pre-escape it here and then escape the whole label a
+  // second time downstream, corrupting entities — don't reintroduce that).
+  var pastorPlainName = pastorNameFor(t) || 'this church';
 
   var header = iAmPastor
     ? '<div class="chat-head-row">'+avatarHtml(themPerson,'md')+'<div>'+
@@ -5219,14 +5380,14 @@ function renderChat(){
       '</div></div>'+
       (t.ice ? '<div class="chat-ice"><strong>Icebreaker</strong>'+escapeHtml(t.ice)+'</div>' : '')
     : '<div class="chat-head-row">'+avatarHtml(themPerson,'md')+'<div>'+
-        '<div class="chat-with">Pastor '+escapeHtml(t.pastor)+'</div>'+
+        '<div class="chat-with">Pastor '+escapeHtml(pastorPlainName)+'</div>'+
         '<div class="chat-sub">'+escapeHtml(t.church)+'</div>'+
       '</div></div>';
 
   var log = t.messages.length
     ? t.messages.map(function(m){
         var mine = (m.by === 'pastor') === iAmPastor;
-        var label = mine ? 'You' : (m.by==='pastor' ? 'Pastor '+t.pastor : t.who);
+        var label = mine ? 'You' : (m.by==='pastor' ? 'Pastor '+pastorPlainName : t.who);
         return '<div class="chat-bubble-row '+(mine?'mine':'theirs')+'">'+
           avatarHtml(mine ? mePerson : themPerson, 'sm')+
           '<div class="chat-bubble '+(mine?'mine':'theirs')+'">'+escapeHtml(m.text)+
@@ -5245,7 +5406,7 @@ function renderChat(){
       '<div class="chat-typing-bubble">'+
         '<span class="chat-typing-dot"></span><span class="chat-typing-dot"></span><span class="chat-typing-dot"></span>'+
       '</div>'+
-      '<span class="chat-typing-label">'+escapeHtml(iAmPastor ? t.who : 'Pastor '+t.pastor)+' is typing\u2026</span>'+
+      '<span class="chat-typing-label">'+escapeHtml(iAmPastor ? t.who : 'Pastor '+pastorPlainName)+' is typing\u2026</span>'+
     '</div>';
 
   bodyEl.innerHTML =
@@ -5432,6 +5593,14 @@ var authMode = 'signin';        // 'signin' | 'signup' — which AU-1 tab is sho
 var authFlashNote = null;       // one-time success message for AU-1's #auNote (e.g. after a password reset), cleared once shown
 var authNext = null;            // where to go after a successful sign-in
 var authSignupRole = null;      // role picked on the sign-up form — see renderAuth
+// Church picked via the AU-1 search picker (a claimable-church object, or
+// null), and whether the "type it by hand" fallback is showing instead. Both
+// module-level, not local to renderAuth(), for the same reason authDraft is:
+// a background re-render (poll-triggered or geocoding-triggered) must never
+// silently wipe an in-progress pick. Reset on fresh AU-1 arrival — see the
+// routeFromHash() signin/signup branch.
+var authChurchPick = null;
+var authChurchOtherMode = false;
 var pendingVerifyEmail = null;  // account awaiting confirmation on VF-1
 // Begins a fresh VF-1 flow for the given account email. Resets BOTH stages'
 // send-status trackers (verifySendStatus, churchVerifySendStatus — declared
@@ -5448,7 +5617,33 @@ function startVerifyFlow(email){
 var authBusy = false;           // guards double-submit while hashing
 var authDraft = {};             // field values carried across a form re-render
 
-function loadAccounts(){ return STORE.get(STORE_KEYS.accounts, []); }
+// Short human-readable account IDs (added per user request so a specific
+// account can be referenced unambiguously — e.g. two accounts sharing a
+// display name). Excludes visually-ambiguous characters (0/O, 1/I/l).
+// Generated once at account creation and never reassigned; loadAccounts()
+// backfills+persists one for any pre-existing account that predates this
+// feature, so every account has one from here on with no separate migration.
+var ACCT_ID_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+function makeAcctId(existingList){
+  var existing = {};
+  (existingList||[]).forEach(function(a){ if(a.acctId) existing[a.acctId] = true; });
+  var id;
+  do {
+    var code = '';
+    for(var i=0;i<5;i++) code += ACCT_ID_CHARS.charAt(Math.floor(Math.random()*ACCT_ID_CHARS.length));
+    id = 'U-'+code;
+  } while(existing[id]);
+  return id;
+}
+function loadAccounts(){
+  var list = STORE.get(STORE_KEYS.accounts, []);
+  var changed = false;
+  list.forEach(function(a){
+    if(!a.acctId){ a.acctId = makeAcctId(list); changed = true; }
+  });
+  if(changed) STORE.set(STORE_KEYS.accounts, list);
+  return list;
+}
 function saveAccounts(list){ STORE.set(STORE_KEYS.accounts, list); }
 function normalizeEmail(email){ return String(email || '').trim().toLowerCase(); }
 function findAccount(email){
@@ -5600,25 +5795,39 @@ function checkVerificationCode(account, entered){
 // one above. Confirming someone owns personal-email@example.com proves
 // nothing about whether they actually run First Baptist Church — so a
 // pastor account additionally needs a code sent to THAT CHURCH'S OWN
-// official email (SEED_CHURCHES[x].email, the address already shown on the
-// church's detail page), which only someone with access to that inbox could
-// enter. Attendees never go through this — isPastorFullyVerified() treats
-// them as trivially fine. See dev note PASTOR CHURCH VERIFICATION for the
-// full shape (why it's a second call site, not folded into checkVerificationCode).
+// official email (the address already shown on the church's detail page,
+// when the directory happens to have one on file), which only someone with
+// access to that inbox could enter. Attendees never go through this —
+// isPastorFullyVerified() treats them as trivially fine. See dev note PASTOR
+// CHURCH VERIFICATION for the full shape (why it's a second call site, not
+// folded into checkVerificationCode).
+//
+// A pastor whose claimed church has NO email on file (churchEmailForAccount
+// returns null) is treated as trivially fine here too — same as an attendee.
+// This matters at scale: church-claiming was extended from the 4 curated
+// SEED_CHURCHES to the full ~3146-entry LOCAL_CHURCHES directory (see the
+// CHURCH CLAIMING dev note above), and the vast majority of that OSM-derived
+// data has no email field. Requiring a code sent to an address that doesn't
+// exist would permanently lock those pastors out of PI-1 with no way out —
+// there's nothing real to verify against, so there's nothing to withhold.
 function isPastorFullyVerified(account){
-  return account.role !== 'pastor' || account.churchVerified === true;
+  if(account.role !== 'pastor') return true;
+  if(account.churchVerified === true) return true;
+  return !churchEmailForAccount(account);
 }
 // The church's own official email, or null if there isn't one on file to
-// verify against — either the pastor typed a custom church name (not one of
-// SEED_CHURCHES) or picked a listing that doesn't carry an email field
-// (right now only FC-1/Rest in Grace has one; see SEED_CHURCHES). null here
-// means church verification genuinely can't happen for this account UNLESS
-// admin override is active (see resolveEmailTarget()) — renderVerifyChurchStage()
-// is what shows the "can't verify yet" state for a real (non-admin) visitor.
+// verify against — either the pastor typed a custom church name (not a real
+// listing) or picked a listing whose data has no email field (true for most
+// of LOCAL_CHURCHES; email is common only among the curated SEED_CHURCHES).
+// null here means church verification genuinely can't happen for this
+// account UNLESS admin override is active (see resolveEmailTarget()) —
+// renderVerifyChurchStage() is what shows the "can't verify yet" state for a
+// real (non-admin) visitor, though with the isPastorFullyVerified() fix
+// above, a null here now means "nothing to verify" rather than "stuck".
 function churchEmailForAccount(account){
   if(!account.churchId) return null;
-  var seed = SEED_CHURCHES.filter(function(s){ return s.id === account.churchId; })[0];
-  return (seed && seed.email) || null;
+  var church = findClaimableChurch(account.churchId);
+  return (church && church.email) || null;
 }
 function sendChurchVerificationEmail(account){
   if(!window.emailjs){
@@ -5687,6 +5896,7 @@ async function createAccount(fields){
   var salt = makeSalt();
   var account = {
     email: email,
+    acctId: makeAcctId(loadAccounts()),
     name: fields.name.trim(),
     role: fields.role === 'pastor' ? 'pastor' : 'attendee',
     churchId: fields.churchId || null,
@@ -5828,9 +6038,6 @@ function renderAuth(){
   var signup = authMode === 'signup';
   var prefill = draft('auName', (window.visitorProfile && window.visitorProfile.name) || '');
   var pastorPick = authSignupRole === 'pastor';
-  var churchOptions = SEED_CHURCHES.map(function(s){
-    return '<option value="'+escapeHtml(s.id)+'">'+escapeHtml(s.name)+'</option>';
-  }).join('') + '<option value="OTHER">Another church \u2014 I\u2019ll type the name</option>';
 
   var html =
     '<p class="eyebrow">Account</p>'+
@@ -5877,12 +6084,17 @@ function renderAuth(){
         '<input type="text" id="auName" maxlength="60" autocomplete="name" placeholder="'+(pastorPick?'e.g. Benjamin':'What should we call you?')+'" value="'+escapeHtml(prefill)+'"></div>';
     if(pastorPick){
       html +=
-        '<div class="auth-field"><label for="auChurch">Your church</label>'+
-          '<select id="auChurch">'+churchOptions+'</select>'+
-          '<p class="auth-hint">This is what connects your inbox to the right listing \u2014 messages sent to this church come to you.</p></div>'+
-        '<div class="auth-field" id="auChurchOtherWrap" style="display:none;">'+
+        '<div class="auth-field" id="auChurchPickerWrap"'+(authChurchOtherMode?' style="display:none;"':'')+'>'+
+          '<label>Your church</label>'+
+          '<div id="auChurchPicker"></div>'+
+          '<p class="auth-hint">This is what connects your inbox to the right listing \u2014 messages sent to this church come to you.</p>'+
+          '<button type="button" class="auth-linkbtn" id="auChurchOtherToggle" style="margin-top:6px;">Not listed? Enter it by hand</button>'+
+        '</div>'+
+        '<div class="auth-field" id="auChurchOtherWrap" style="'+(authChurchOtherMode?'':'display:none;')+'">'+
           '<label for="auChurchOther">Church name</label>'+
-          '<input type="text" id="auChurchOther" maxlength="80" placeholder="Name of your church" value="'+escapeHtml(draft('auChurchOther'))+'"></div>';
+          '<input type="text" id="auChurchOther" maxlength="80" placeholder="Name of your church" value="'+escapeHtml(draft('auChurchOther'))+'">'+
+          '<button type="button" class="auth-linkbtn" id="auChurchSearchToggle" style="margin-top:6px;">Search the directory instead</button>'+
+        '</div>';
     }
     html +=
       '<div class="auth-field"><label for="auEmail">Email</label>'+
@@ -5927,12 +6139,25 @@ function renderAuth(){
   if(signup){
     document.getElementById('roleAttendee').addEventListener('click', function(){ captureAuthDraft(); authSignupRole = 'attendee'; renderAuth(); });
     document.getElementById('rolePastor').addEventListener('click', function(){ captureAuthDraft(); authSignupRole = 'pastor'; renderAuth(); });
-    var churchSel = document.getElementById('auChurch');
-    if(churchSel){
-      churchSel.addEventListener('change', function(){
-        document.getElementById('auChurchOtherWrap').style.display = churchSel.value === 'OTHER' ? 'block' : 'none';
+    var pickerEl = document.getElementById('auChurchPicker');
+    if(pickerEl){
+      wireChurchPicker(pickerEl, {
+        initial: authChurchPick,
+        onChange: function(c){ authChurchPick = c; }
       });
     }
+    var otherToggle = document.getElementById('auChurchOtherToggle');
+    if(otherToggle) otherToggle.addEventListener('click', function(){
+      captureAuthDraft();
+      authChurchOtherMode = true;
+      renderAuth();
+    });
+    var searchToggle = document.getElementById('auChurchSearchToggle');
+    if(searchToggle) searchToggle.addEventListener('click', function(){
+      captureAuthDraft();
+      authChurchOtherMode = false;
+      renderAuth();
+    });
   }
   document.getElementById('auSubmit').addEventListener('click', submitAuth);
   // Enter should submit from any field — a form that only responds to the button
@@ -5956,14 +6181,17 @@ function submitAuth(){
   if(authMode === 'signup'){
     var churchId = null, churchName = null;
     if(authSignupRole === 'pastor'){
-      var sel = document.getElementById('auChurch');
-      if(sel.value === 'OTHER'){
+      if(authChurchOtherMode){
         churchName = document.getElementById('auChurchOther').value.trim();
         if(!churchName){ return fail('Please enter the name of your church.'); }
+      } else if(authChurchPick){
+        if(churchAlreadyClaimed(authChurchPick.id)){
+          return fail('That church has already been claimed by another account. If that’s a mistake, contact us.');
+        }
+        churchId = authChurchPick.id;
+        churchName = authChurchPick.name;
       } else {
-        churchId = sel.value;
-        var seed = SEED_CHURCHES.filter(function(s){ return s.id === churchId; })[0];
-        churchName = seed ? seed.name : churchId;
+        return fail('Please choose your church from the list, or enter it by hand.');
       }
     }
     var name = document.getElementById('auName').value;
@@ -6055,7 +6283,11 @@ function triggerVerificationSend(account){
 
 function verifyStageFor(account){
   if(!account.verified) return 'email';
-  if(account.role === 'pastor' && !account.churchVerified) return 'church';
+  // Only route through the church stage when there's actually something to
+  // verify against — see isPastorFullyVerified()'s dev note. A claimed
+  // church with no email on file skips straight to 'done', same as an
+  // attendee always does.
+  if(account.role === 'pastor' && !account.churchVerified && churchEmailForAccount(account)) return 'church';
   return 'done';
 }
 
@@ -6461,10 +6693,153 @@ function pastorAccountFor(t){
 function threadPerson(t, side){
   if(side === 'pastor'){
     var pa = pastorAccountFor(t);
-    return { name: pa ? pa.name : ('Pastor ' + (t.pastor || '')), photo: pa && pa.photo };
+    return { name: pa ? pa.name : ('Pastor ' + (t.pastor || 'this church')), photo: pa && pa.photo };
   }
   var va = visitorAccountFor(t);
   return { name: va ? va.name : t.who, photo: va && va.photo };
+}
+
+// ---- CHURCH CLAIMING (AU-1 signup / AC-1 self-link / AD-2 admin relink) ----
+// A pastor can claim ANY church in the directory, not just the 4 curated
+// SEED_CHURCHES — per user request ("the pastor is then given a list when he's
+// selecting what church he's claiming... using the existing ID, the account
+// that they're making to connect their church is connected to the ID of that
+// page. So all they have to do is just claim it"). A "claim" is just setting
+// account.churchId to a stable id (FC-n or LC-n) — see the LOCAL_CHURCHES dev
+// note above for why LC-n ids are safe to treat as permanent. Once claimed,
+// EVERY place that shows/routes a church's messaging (contact button, CV-1,
+// PI-1) works off account.churchId matching, not off which 4 churches happen
+// to have hand-typed pastor data — see pastorNameFor() below.
+var CLAIMABLE_ID_RE = /^(FC|LC)-/;
+function isClaimableChurchId(id){ return !!id && CLAIMABLE_ID_RE.test(id); }
+// Prefers the REAL claiming pastor's account name over a seed's static
+// flavor-text `.pastor` field, so claiming a church automatically upgrades
+// every place that shows the pastor's name (contact button, chat header,
+// message labels, typing indicator) with no separate migration step.
+function pastorNameFor(t){
+  var pa = pastorAccountFor(t);
+  if(pa && pa.name) return pa.name;
+  return t && t.pastor ? t.pastor : '';
+}
+function allClaimableChurches(){
+  return SEED_CHURCHES.concat(LOCAL_CHURCHES);
+}
+// Substring match on name/address, capped at 8 results — this is a type-to-
+// filter picker, not a giant flat list of ~3146 churches.
+function searchClaimableChurches(query){
+  var q = String(query||'').trim().toLowerCase();
+  if(!q) return [];
+  var out = [];
+  var all = allClaimableChurches();
+  for(var i=0;i<all.length && out.length<8;i++){
+    var c = all[i];
+    if(!c.id) continue;
+    if((c.name && c.name.toLowerCase().indexOf(q) !== -1) ||
+       (c.address && c.address.toLowerCase().indexOf(q) !== -1)){
+      out.push(c);
+    }
+  }
+  return out;
+}
+function findClaimableChurch(id){
+  if(!id) return null;
+  if(id.indexOf('FC-') === 0) return SEED_CHURCHES.filter(function(s){ return s.id === id; })[0] || null;
+  if(id.indexOf('LC-') === 0) return LOCAL_CHURCHES.filter(function(c){ return c.id === id; })[0] || null;
+  return null;
+}
+// True if some OTHER account already claims this church. exceptEmail lets an
+// account check against its own current listing without flagging itself.
+function churchAlreadyClaimed(churchId, exceptEmail){
+  if(!churchId) return false;
+  var except = exceptEmail ? normalizeEmail(exceptEmail) : null;
+  return loadAccounts().some(function(a){
+    return a.role === 'pastor' && a.churchId === churchId &&
+      (!except || normalizeEmail(a.email) !== except);
+  });
+}
+// Reusable search-picker widget, imperatively managed so a keystroke never
+// forces a full parent-page re-render (which would tear the input down
+// mid-typing — see the routeFromHash() redundant-render guard below for the
+// bug that motivated this). Reused identically at AU-1 signup, AC-1 self-
+// link, and AD-2 admin relink.
+//   opts.initial      — a claimable-church object already selected, or null
+//   opts.onChange(c)  — called with the newly selected church object
+//   opts.excludeEmail — when checking "already claimed", ignore this account
+//                        (so re-picking your own current church doesn't warn)
+//   opts.allowClaimed — if true, a claimed row is still pickable (used by
+//                        AD-2, which can deliberately reassign a claim)
+function wireChurchPicker(rootEl, opts){
+  opts = opts || {};
+  var selected = opts.initial || null;
+  var query = '';
+
+  function renderSelected(){
+    rootEl.innerHTML =
+      '<div class="church-picker-selected">'+
+        '<div class="church-picker-selected-main">'+
+          '<div class="church-picker-selected-name">'+escapeHtml(selected.name)+'</div>'+
+          (selected.address ? '<div class="church-picker-selected-addr">'+escapeHtml(selected.address)+'</div>' : '')+
+        '</div>'+
+        '<button type="button" class="church-picker-change">Change</button>'+
+      '</div>';
+    rootEl.querySelector('.church-picker-change').addEventListener('click', function(){
+      selected = null;
+      query = '';
+      renderSearch();
+    });
+  }
+
+  function renderResultsList(container){
+    var results = searchClaimableChurches(query);
+    if(!query.trim()){
+      container.innerHTML = '';
+      return;
+    }
+    if(!results.length){
+      container.innerHTML = '<div class="church-picker-empty">No churches match “'+escapeHtml(query)+'”.</div>';
+      return;
+    }
+    container.innerHTML = results.map(function(c){
+      var claimed = churchAlreadyClaimed(c.id, opts.excludeEmail);
+      // allowClaimed (AD-2) shows the tag but still lets it be picked —
+      // admin can deliberately reassign a claim, with a confirm() in the
+      // onChange handler. Everywhere else, a claimed row is shown but disabled.
+      var blocked = claimed && !opts.allowClaimed;
+      return '<div class="church-picker-row'+(blocked?' taken':'')+'" data-id="'+escapeHtml(c.id)+'">'+
+        '<div class="church-picker-row-name">'+escapeHtml(c.name)+(claimed?' <span class="church-picker-row-tag">Claimed</span>':'')+'</div>'+
+        (c.address ? '<div class="church-picker-row-addr">'+escapeHtml(c.address)+'</div>' : '')+
+      '</div>';
+    }).join('');
+    // mousedown, not click — dodges the input's blur firing (and tearing this
+    // list down) before a click on it would have registered.
+    container.querySelectorAll('.church-picker-row').forEach(function(row){
+      if(row.classList.contains('taken')) return;
+      row.addEventListener('mousedown', function(e){
+        e.preventDefault();
+        var c = findClaimableChurch(row.getAttribute('data-id'));
+        if(!c) return;
+        selected = c;
+        if(opts.onChange) opts.onChange(c);
+        renderSelected();
+      });
+    });
+  }
+
+  function renderSearch(){
+    rootEl.innerHTML =
+      '<input type="text" class="church-picker-input" placeholder="Search churches by name or address…" autocomplete="off">'+
+      '<div class="church-picker-results"></div>';
+    var input = rootEl.querySelector('.church-picker-input');
+    var results = rootEl.querySelector('.church-picker-results');
+    input.value = query;
+    renderResultsList(results);
+    input.addEventListener('input', function(){
+      query = input.value;
+      renderResultsList(results);
+    });
+  }
+
+  if(selected) renderSelected(); else renderSearch();
 }
 
 // ---- AC-1 profile editing state ----
@@ -6473,6 +6848,12 @@ function threadPerson(t, side){
 // whenever another tab touches THREADS, and a draft held in a local variable
 // would silently vanish mid-edit. `photo` uses three states — undefined means
 // "unchanged", null means "remove it", a string means "this new one".
+// AC-1's "link a listing" church picker state — module-level for the same
+// reason profileDraft is: refreshThreadsFromStorage() can re-render AC-1 in
+// the background, and a local variable would silently wipe an in-progress
+// pick. Reset when leaving AC-1 (see setView()'s per-view cleanup block).
+var acChurchPick = null;
+var acChurchNote = null;
 var profileDraft = { editing:false, bio:null, photo:undefined, note:null, noteClass:'' };
 function resetProfileDraft(){
   profileDraft = { editing:false, bio:null, photo:undefined, note:null, noteClass:'' };
@@ -6645,6 +7026,12 @@ function renderAccount(){
   var unread = myThreads.reduce(function(n,t){
     return n + ((isPastor ? t.unreadPastor : t.unreadVisitor) ? 1 : 0);
   }, 0);
+  // Church-affiliation verification only APPLIES when there's an official
+  // email on file to verify against — see isPastorFullyVerified() dev note.
+  // Most of the directory (LC-n entries from OSM) has none, so for those a
+  // claim is simply done once made; don't show a "not yet verified"/"locked"
+  // card for something that was never possible to verify in the first place.
+  var canVerifyChurch = isPastor && !!churchEmailForAccount(account);
 
   // Profile header (photo + name + bio) sits above everything else, the way a
   // profile page reads \u2014 the account facts stay in the cards below it.
@@ -6669,13 +7056,14 @@ function renderAccount(){
     '<p class="eyebrow">Account</p>'+
     profileBlock+
     '<div class="account-card">'+
+      '<div class="account-row"><span class="k">Account ID</span><span class="v"><span class="acct-id-chip">'+escapeHtml(account.acctId || '')+'</span></span></div>'+
       '<div class="account-row"><span class="k">Email</span><span class="v">'+escapeHtml(account.email)+'</span></div>'+
       '<div class="account-row"><span class="k">Status</span><span class="v"><span class="account-badge ok">Confirmed</span></span></div>'+
       '<div class="account-row"><span class="k">Role</span><span class="v">'+(isPastor ? 'Pastor / church leader' : 'Church attendee')+'</span></div>'+
       (isPastor && account.churchName
         ? '<div class="account-row"><span class="k">Church</span><span class="v">'+escapeHtml(account.churchName)+'</span></div>'
         : '')+
-      (isPastor
+      (canVerifyChurch
         ? '<div class="account-row"><span class="k">Church affiliation</span><span class="v">'+
             (account.churchVerified
               ? '<span class="account-badge ok">Verified</span>'
@@ -6687,23 +7075,26 @@ function renderAccount(){
     // Owning your personal email doesn't prove you run this church's listing \u2014
     // see PASTOR CHURCH VERIFICATION dev note. Until that second code is
     // confirmed, PI-1 is off limits; give them a direct way back into that step.
-    (isPastor && !account.churchVerified
+    // Only shown when there's actually something to verify against
+    // (canVerifyChurch) \u2014 most claimed directory listings have no official
+    // email on file, so isPastorFullyVerified() treats those as already as
+    // verified as they can be, and there's nothing useful for this card to say.
+    (canVerifyChurch && !account.churchVerified
       ? '<div class="account-card">'+
           '<p class="auth-hint" style="margin:0 0 12px;">Your inbox stays locked until we\u2019ve confirmed you actually run '+escapeHtml(account.churchName || 'this listing')+' \u2014 a second code goes to the church\u2019s own official email on file.</p>'+
           '<button class="account-btn primary" id="acVerifyChurch">Verify church affiliation</button>'+
         '</div>'
       : '')+
-    // A pastor who typed a church name rather than picking a listing has an inbox
-    // nothing can ever reach. Rather than leave them stuck at that dead end, let
-    // them link to a listing from here.
+    // A pastor who typed a church name rather than picking a listing, or
+    // whose listing was somehow never linked, has an inbox nothing can ever
+    // reach. Rather than leave them stuck at that dead end, let them link to
+    // (claim) any directory listing from here \u2014 same search picker as AU-1.
     (isPastor && !account.churchId
       ? '<div class="account-card">'+
           '<p class="auth-hint" style="margin:0 0 12px;">Your church isn\u2019t linked to a directory listing, so attendees have no listing to message. Link it here:</p>'+
-          '<div class="auth-field"><label for="acChurch">Church listing</label>'+
-            '<select id="acChurch"><option value="">Choose a listing\u2026</option>'+
-            SEED_CHURCHES.map(function(s){ return '<option value="'+escapeHtml(s.id)+'">'+escapeHtml(s.name)+'</option>'; }).join('')+
-            '</select></div>'+
-          '<button class="account-btn primary" id="acLinkChurch">Link listing</button>'+
+          '<div id="acChurchPicker"></div>'+
+          (acChurchNote ? '<p class="auth-note error" style="margin-top:8px;">'+escapeHtml(acChurchNote)+'</p>' : '')+
+          '<button class="account-btn primary" id="acLinkChurch" style="margin-top:12px;">Link listing</button>'+
         '</div>'
       : '')+
     '<div class="account-actions">'+
@@ -6744,14 +7135,27 @@ function renderAccount(){
   if(search) search.addEventListener('click', function(){ location.hash = 'attendee'; });
   var thread = document.getElementById('acGoThread');
   if(thread) thread.addEventListener('click', function(){ openThread(myThreads[0].id, 'visitor'); });
+  var acPickerEl = document.getElementById('acChurchPicker');
+  if(acPickerEl){
+    wireChurchPicker(acPickerEl, {
+      initial: acChurchPick,
+      excludeEmail: account.email,
+      onChange: function(c){ acChurchPick = c; acChurchNote = null; }
+    });
+  }
   var linkBtn = document.getElementById('acLinkChurch');
   if(linkBtn) linkBtn.addEventListener('click', function(){
-    var sel = document.getElementById('acChurch');
-    if(!sel.value) return;
-    var seed = SEED_CHURCHES.filter(function(s){ return s.id === sel.value; })[0];
-    account.churchId = seed.id;
-    account.churchName = seed.name;
+    if(!acChurchPick){ acChurchNote = 'Choose a church from the list first.'; renderAccount(); return; }
+    if(churchAlreadyClaimed(acChurchPick.id, account.email)){
+      acChurchNote = 'That church has already been claimed by another account. If that’s a mistake, contact us.';
+      renderAccount();
+      return;
+    }
+    account.churchId = acChurchPick.id;
+    account.churchName = acChurchPick.name;
     upsertAccount(account);
+    acChurchPick = null;
+    acChurchNote = null;
     renderAccount();
   });
   document.getElementById('acReset').addEventListener('click', function(){
@@ -6928,13 +7332,13 @@ function adminSetRole(account, role){
   upsertAccount(account);
   renderAdminAccounts();
 }
-function adminLinkChurch(account, seedId){
-  var seed = SEED_CHURCHES.filter(function(s){ return s.id === seedId; })[0];
-  if(!seed) return;
-  account.churchId = seed.id;
-  account.churchName = seed.name;
+function adminLinkChurch(account, churchId){
+  var church = findClaimableChurch(churchId);
+  if(!church) return;
+  account.churchId = church.id;
+  account.churchName = church.name;
   upsertAccount(account);
-  adminAcctNote = account.name + ' is now linked to ' + seed.name + '.';
+  adminAcctNote = account.name + ' is now linked to ' + church.name + '.';
   renderAdminAccounts();
 }
 // Removes the account and the conversations THEY started. A pastor's church
@@ -6974,13 +7378,9 @@ function adminAcctPanelHtml(a){
   var fullyVerified = a.verified && (!isPastor || a.churchVerified);
   return '<div class="admin-acct-panel">'+
     (isPastor
-      ? '<div class="auth-field"><label for="adLink-'+escapeHtml(a.email)+'">Church listing</label>'+
-          '<select id="adLink-'+escapeHtml(a.email)+'" data-link="'+escapeHtml(a.email)+'">'+
-            '<option value="">'+(a.churchId ? 'Change listing…' : 'Choose a listing…')+'</option>'+
-            SEED_CHURCHES.map(function(s){
-              return '<option value="'+escapeHtml(s.id)+'"'+(s.id===a.churchId?' selected':'')+'>'+escapeHtml(s.name)+'</option>';
-            }).join('')+
-          '</select></div>'
+      ? '<div class="auth-field"><label>Church listing</label>'+
+          '<div class="admin-link-picker" data-picker-for="'+escapeHtml(a.email)+'"></div>'+
+        '</div>'
       : '')+
     '<div class="admin-acct-btns">'+
       '<button class="account-btn primary" data-act="signin" data-email="'+escapeHtml(a.email)+'">Sign in as</button>'+
@@ -7009,7 +7409,9 @@ function renderAdminAccounts(){
     return '<div class="admin-acct">'+
       avatarHtml(a, 'md')+
       '<div class="admin-acct-main">'+
-        '<div class="admin-acct-name">'+escapeHtml(a.name || '(no name)')+'</div>'+
+        '<div class="admin-acct-name">'+escapeHtml(a.name || '(no name)')+
+          '<span class="acct-id-chip">'+escapeHtml(a.acctId || '')+'</span>'+
+        '</div>'+
         '<div class="admin-acct-email">'+escapeHtml(a.email)+'</div>'+
         (a.bio ? '<div class="admin-acct-bio">'+escapeHtml(a.bio)+'</div>' : '')+
         '<div class="admin-acct-tags">'+
@@ -7021,6 +7423,9 @@ function renderAdminAccounts(){
             ? (a.churchVerified
                 ? '<span class="account-badge ok">Church verified</span>'
                 : '<span class="account-badge no">Church unverified</span>')
+            : '')+
+          (isPastor && !a.churchId
+            ? '<span class="account-badge no">Not linked — can’t receive messages</span>'
             : '')+
           (a.photo ? '<span class="account-badge ok">Has photo</span>' : '')+
         '</div>'+
@@ -7082,11 +7487,25 @@ function renderAdminAccounts(){
       if(act === 'delete') return adminDeleteAccount(account);
     });
   });
-  body.querySelectorAll('[data-link]').forEach(function(sel){
-    sel.addEventListener('change', function(){
-      if(!sel.value) return;
-      var account = findAccount(sel.getAttribute('data-link'));
-      if(account) adminLinkChurch(account, sel.value);
+  // At most one admin row panel can be open at a time (adminAcctOpen), so at
+  // most one of these exists per render — no need for module-level state to
+  // survive a background re-render the way AU-1/AC-1's pickers do.
+  body.querySelectorAll('[data-picker-for]').forEach(function(pickerEl){
+    var email = pickerEl.getAttribute('data-picker-for');
+    var account = findAccount(email);
+    if(!account) return;
+    wireChurchPicker(pickerEl, {
+      initial: account.churchId ? findClaimableChurch(account.churchId) : null,
+      excludeEmail: account.email,
+      allowClaimed: true, // admin can deliberately reassign a claim
+      onChange: function(c){
+        if(churchAlreadyClaimed(c.id, account.email) &&
+           !window.confirm(c.name + ' is already claimed by another account. Reassign it to ' + account.name + ' anyway?')){
+          renderAdminAccounts();
+          return;
+        }
+        adminLinkChurch(account, c.id);
+      }
     });
   });
 }
@@ -7123,6 +7542,9 @@ function renderAcctPill(view){
 }
 document.getElementById('acctPill').addEventListener('click', function(){
   location.hash = currentAccount() ? 'account' : 'signin';
+});
+document.getElementById('homeBtn').addEventListener('click', function(){
+  location.hash = 'landing';
 });
 document.getElementById('authBackBtn').addEventListener('click', function(){
   // Abandoning sign-in drops the pending destination too, otherwise a later
