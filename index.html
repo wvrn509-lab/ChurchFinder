@@ -28,7 +28,12 @@
     requests and Nominatim rate-limiting). Runs CONCURRENTLY with the initial
     fetchChurches(), not chained before it, and calls onProgress after each seed
     so featured churches pop in progressively. Errors are swallowed per seed so
-    one bad address doesn't kill the others.
+    one bad address doesn't kill the others — which is ALSO why a seed that
+    fails to geocode disappears with no message at all; see the featured-church
+    disappearance entry in the CHANGE LOG before assuming a missing church means
+    the geocoders are down. A seed that already carries lat/lon is SKIPPED by
+    geocodeSeeds() entirely: set those two fields on a SEED_CHURCHES entry to
+    pin it exactly and take it off the network permanently.
   - Seed photos: a SEED_CHURCHES entry can optionally carry a `photo` field (data URI
     or stable hosted URL). FC-1, FC-2, FC-3, and FC-4 all have one now — every seed
     has a photo. IMPORTANT — there are TWO
@@ -730,6 +735,36 @@
   implying reach it doesn't have. Keep that note if you restyle the page.
 
   ===== CHANGE LOG (most recent first) =====
+  - FIXED THE FEATURED-CHURCH DISAPPEARANCE ("Why isn't Rest in Grace on the
+    map?"), root-caused at last. It was never really a live-geocoder outage;
+    it was two bugs in our own code, found by probing what the app actually
+    resolves each seed to:
+    1) geocodeLocal() took the FIRST 5-digit run in a string as the zip. In a
+       full street address that is the HOUSE NUMBER — "28200 Bouquet Canyon
+       Rd, Santa Clarita, CA 91350" matched 28200, which is in no gazetteer.
+       So the offline table MISSED, and the seed fell through to Photon and
+       Nominatim, which are rate-limited and fail silently in geocodeSeeds'
+       catch — leaving lat/lon null, and applyFilters() skips seeds with no
+       coordinates. FC-1, FC-2 and FC-4 all have 5-digit house numbers and all
+       silently vanished; FC-3 ("1941 S Barrington") has a 4-digit number, so
+       it alone worked, which is exactly why this looked intermittent and
+       church-specific rather than systematic. Now takes the LAST 5-digit run.
+       The city fallback had the mirror-image bug — it read the FIRST comma
+       segment, i.e. the street — so it now scans segments from the END.
+       Measured before/after with the live geocoders blocked: featured
+       churches in results went from [] to [FC-1, FC-2, FC-4] (FC-3 is 24mi
+       out, correctly outside the default 10mi radius). The seeds now need NO
+       network at all in the covered area.
+    2) The seed dedupe could delete one seed with another. It exists to drop a
+       generic OSM listing of the same building, but two curated seeds can
+       legitimately share coordinates — FC-2 and FC-4 are both in zip 91321 and
+       both resolve to that zip's centroid, so Elevate Church was silently
+       deleting El Buen Samaritano. Seeds are now skipped by that loop.
+    STILL WORTH DOING: a zip centroid is ~1-3 miles from the actual building,
+    so the pins are present but not precise. geocodeSeeds() now SKIPS any seed
+    that already carries lat/lon, so pinning a church exactly is just adding
+    those two fields to its SEED_CHURCHES entry — no geocoder, no network,
+    same as the embedded dataset. Waiting on exact coordinates from the user.
   - FOUR FEATURES IN ONE PASS, per explicit request: a way back to LP-1, a
     typing indicator in chats, account profiles ("basically copy Instagram's
     setup"), and an admin page listing accounts. Full detail in the dedicated
@@ -3464,6 +3499,14 @@ var SEED_CHURCHES = [
 async function geocodeSeeds(onProgress){
   for(var i=0;i<SEED_CHURCHES.length;i++){
     var seed = SEED_CHURCHES[i];
+    // A seed that already carries coordinates is authoritative — skip it
+    // entirely. This is the hook for pinning a featured church to its exact
+    // spot: add lat/lon to the SEED_CHURCHES entry and it stops depending on
+    // any geocoder, matching how the embedded dataset already works.
+    if(seed.lat != null && seed.lon != null){
+      if(onProgress) onProgress();
+      continue;
+    }
     try{
       var loc = await geocode(seed.address);
       seed.lat = loc.lat; seed.lon = loc.lon;
@@ -3751,15 +3794,38 @@ async function geocodeNominatim(query){
 function geocodeLocal(query){
   if(!query) return null;
   var k = query.trim().toLowerCase().replace(/\s+/g,' ');
-  if(GAZETTEER[k]) return {lat:GAZETTEER[k][0], lon:GAZETTEER[k][1], local:true};
-  // Bare 5-digit zip
-  var zip = k.match(/\b(\d{5})\b/);
-  if(zip && GAZETTEER[zip[1]]) return {lat:GAZETTEER[zip[1]][0], lon:GAZETTEER[zip[1]][1], local:true};
+  var hit = function(key){
+    return GAZETTEER[key] ? {lat:GAZETTEER[key][0], lon:GAZETTEER[key][1], local:true} : null;
+  };
+  var found = hit(k);
+  if(found) return found;
+  // Zip. Take the LAST 5-digit run, not the first: in a full street address the
+  // first one is usually the HOUSE NUMBER ("28200 Bouquet Canyon Rd, Santa
+  // Clarita, CA 91350" matched 28200, which is in no gazetteer, so the lookup
+  // failed and fell through to the live geocoders). US zips sit at the end.
+  var zips = k.match(/\b\d{5}\b/g);
+  if(zips){
+    found = hit(zips[zips.length - 1]);
+    if(found) return found;
+  }
   // "City, CA 91355" / "City CA" -> try progressively looser keys
   var noZip = k.replace(/\s*\d{5}(-\d{4})?\s*$/,'').replace(/\s*,\s*$/,'');
-  if(GAZETTEER[noZip]) return {lat:GAZETTEER[noZip][0], lon:GAZETTEER[noZip][1], local:true};
-  var cityOnly = noZip.split(',')[0].trim();
-  if(GAZETTEER[cityOnly]) return {lat:GAZETTEER[cityOnly][0], lon:GAZETTEER[cityOnly][1], local:true};
+  found = hit(noZip);
+  if(found) return found;
+  // Comma segments, scanned from the END. A bare place name is one segment and
+  // still works; a full street address has the city near the end and the street
+  // at the front, so starting from the front matched "28200 bouquet canyon rd"
+  // and never reached "santa clarita". A trailing state abbreviation is dropped
+  // so "santa clarita, ca" and "santa clarita" both resolve.
+  var parts = noZip.split(',').map(function(s){ return s.trim(); }).filter(Boolean);
+  for(var i = parts.length - 1; i >= 0; i--){
+    found = hit(parts[i]) || hit(parts[i] + ', ca');
+    if(found) return found;
+    if(i > 0){
+      found = hit(parts[i-1] + ', ' + parts[i]);
+      if(found) return found;
+    }
+  }
   return null;
 }
 
@@ -3968,6 +4034,12 @@ function applyFilters(){
       // removed — it compared only the seed's FIRST word ("El" for El Buen
       // Samaritano) and deleted unrelated churches. Distance is the reliable
       // "same building" signal.
+      // NEVER dedupe one seed against another. This loop exists to drop a
+      // generic OSM listing of the same building, but seeds are hand-curated
+      // and distinct by definition — and two of them can legitimately share
+      // coordinates when both resolve to the same zip centroid (FC-2 and FC-4
+      // are both in 91321), which silently deleted El Buen Samaritano.
+      if(places[i].featured) continue;
       if(haversine(places[i].lat, places[i].lon, seed.lat, seed.lon) < 0.06) places.splice(i,1);
     }
     places.push({
