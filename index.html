@@ -756,6 +756,23 @@
   implying reach it doesn't have. Keep that note if you restyle the page.
 
   ===== CHANGE LOG (most recent first) =====
+  - WORDING CONSISTENCY, per explicit request: LP-1's first gate button
+    (still linking to TP-1) is now "Church Leader / Member" instead of
+    "Church Member / Server". AU-1's sign-up role picker now reads "Church
+    Leader" / "Attendee", in that order (was "Attendee" / "Pastor /
+    leader") — Church Leader is now the umbrella term for a pastor/church
+    leader account everywhere in the UI (LP-1's pastor-only button, AU-1's
+    role choice, and the app's internal role value is still 'pastor', so no
+    stored account data or routing changed, only the labels).
+    Also chased down the "edits to FC-1 aren't saving" report: built a
+    real end-to-end test using actual file uploads (Playwright
+    setInputFiles, not seeded data) through the banner/logo pickers, plus
+    text typed in between two image uploads — all of it saves and renders
+    correctly (9 checks, all pass). Everything in EP-1/showDetail() checks
+    out; if this is still reported, the next thing to check is the actual
+    deployed build (the live site's URL changed to churchffinder.netlify.app
+    — confirm its deploy log is actually building from main and the latest
+    commit) before assuming an app bug.
   - MADE LP-1's "CHURCH LEADER" BUTTON PASTOR-ONLY, per explicit request
     ("the church leader button should only appear for church leaders"). It
     was showing to every anonymous visitor as a third gate choice alongside
@@ -3472,7 +3489,7 @@
     <p class="gate-sub">Let us know which best describes you so we can take you to the right place.</p>
     <div class="gate-choices">
       <button class="gate-btn" id="btnMember">
-        <span class="gate-btn-title">Church Member / Server</span>
+        <span class="gate-btn-title">Church Leader / Member</span>
         <span class="gate-btn-sub">View membership tiers and giving options</span>
       </button>
       <button class="gate-btn" id="btnAttendee">
@@ -6650,13 +6667,13 @@ function renderAuth(){
     html +=
       '<p class="auth-hint" style="margin:0 0 10px;font-size:12.5px;">First, which are you?</p>'+
       '<div class="auth-roles">'+
+        '<button class="auth-role'+(authSignupRole==='pastor'?' on':'')+'" id="rolePastor">'+
+          '<span class="auth-role-title">Church Leader</span>'+
+          '<span class="auth-role-sub">Serving at a church</span>'+
+        '</button>'+
         '<button class="auth-role'+(authSignupRole==='attendee'?' on':'')+'" id="roleAttendee">'+
           '<span class="auth-role-title">Attendee</span>'+
           '<span class="auth-role-sub">Looking for a church</span>'+
-        '</button>'+
-        '<button class="auth-role'+(authSignupRole==='pastor'?' on':'')+'" id="rolePastor">'+
-          '<span class="auth-role-title">Pastor / leader</span>'+
-          '<span class="auth-role-sub">Serving at a church</span>'+
         '</button>'+
       '</div>';
     if(!authSignupRole){
