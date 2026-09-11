@@ -756,6 +756,43 @@
   implying reach it doesn't have. Keep that note if you restyle the page.
 
   ===== CHANGE LOG (most recent first) =====
+  - ADDED CHURCH PAGE EDITING (EP-1, reachable at #edit-church-<id>), per
+    explicit request, with the field list approved up front. A claiming
+    pastor can set a banner photo, a round church logo, a page colour, a
+    tagline, an About description, service times, contact overrides
+    (phone/website/email), a single call-to-action button (label + link),
+    and the church's social links. Three doors in, all of which land on the
+    same editor: a new "Church Leader" button on LP-1 (resolves to sign-in,
+    or "claim a listing first", or their church's page), finding their own
+    church through SR-1, and a pencil button top-right of the banner that
+    only renders for the pastor who claims that church.
+    THE KEY DESIGN CALL: edits are an OVERLAY, never a rewrite. The
+    directory is read-only (SEED_CHURCHES is hardcoded, LOCAL_CHURCHES is a
+    3146-entry embedded dataset), so edits live in their own store keyed by
+    church id and are merged in by applyChurchProfile() at the top of
+    showDetail(). A church with no edits renders exactly as it did before,
+    and any edit is revertible by dropping one key.
+    DELIBERATELY NOT THEMED by the pastor's colour: the search-card stripe
+    and the map pin. Both of those are explained by the SR-1 denomination
+    legend, so letting a pastor recolour them would make the legend and the
+    map lie. accent themes the church's own page only.
+    SECURITY, and this is the part not to undo: several detail-page fields
+    (description, service times, phone, website, email) used to come only
+    from map data and were interpolated raw. They can now carry
+    pastor-typed text, so they are escaped at every render site, and every
+    URL goes through the new safeLink() — http/https only, no quotes or
+    angle brackets — before it reaches an href. A 'javascript:' link is
+    refused at save time with a readable message rather than silently
+    dropped. safeAccent() does the same job for the colour, mirroring the
+    existing safePhoto().
+    Also fixed while in here, both pre-existing: #church-<id> only opened a
+    church that happened to be in the CURRENT search results, so a deep
+    link (and the whole LP-1 leader flow) broke — placeForChurchId() now
+    falls back to the directory, with the Distance row skipped rather than
+    invented when there's no search centre to measure from. And textareas
+    had never been given the .auth-field styling, so every one in the app
+    (EP-1's description plus EV-1's event/update/recap boxes) was rendering
+    as an unstyled white monospace box.
   - FIXED A REAL VERIFICATION BUG on VF-1 (#verify): routeFromHash() was
     missing the same redundant-render guard already in place on
     signin/signup, #account and #admin-accounts (see those dev notes).
@@ -2265,6 +2302,11 @@
   .profile-card.vigil .profile-field .k{ color:#8A8776; }
   .profile-card.vigil .profile-field .v{ color:#F2F0E8; }
   .profile-card.vigil .profile-field .v a{ color:#D9B84A; }
+  /* Same light-on-dark treatment for the pastor-editable page furniture. */
+  .profile-card.vigil .profile-tagline{ color:#C9C6BC; }
+  .profile-card.vigil .profile-social{ border-color:rgba(255,255,255,0.22); color:#D9D6CC; }
+  .profile-card.vigil .profile-social:hover{ border-color:#D9B84A; color:#D9B84A; }
+  .profile-card.vigil .profile-logo{ border-color:#151513; }
 
 
   @media (max-width:860px){
@@ -2441,6 +2483,74 @@
   .church-event-desc{ font-size:13px; color:var(--text-dim); margin-top:6px; white-space:pre-wrap; }
   .church-post-head{ font-size:12.5px; color:var(--text-dim); margin-bottom:4px; }
   .church-post-text{ font-size:13.5px; white-space:pre-wrap; }
+
+  /* EP-1 church page editor */
+  .ec-section-title{ font-size:13px; font-weight:700; margin:0 0 12px; letter-spacing:0.02em; }
+  .ec-banner-preview{
+    height:150px; border-radius:10px; background-size:cover; background-position:center;
+    border:1px solid rgba(255,255,255,0.16);
+  }
+  .ec-banner-preview.empty{
+    display:flex; align-items:center; justify-content:center;
+    background:rgba(255,255,255,0.05); color:#8A93AC; font-size:12.5px;
+  }
+  .ec-logo-row{ display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  .ec-logo-preview{
+    width:72px; height:72px; flex:none; border-radius:50%;
+    background-size:cover; background-position:center;
+    border:1px solid rgba(255,255,255,0.16);
+  }
+  .ec-logo-preview.empty{
+    display:flex; align-items:center; justify-content:center;
+    background:rgba(255,255,255,0.06); color:#8A93AC;
+    font-size:22px; font-weight:600;
+  }
+  .ec-swatches{ display:flex; flex-wrap:wrap; gap:10px; }
+  .ec-swatch{
+    width:34px; height:34px; border-radius:50%; cursor:pointer;
+    border:2px solid transparent; box-shadow:0 0 0 1px rgba(255,255,255,0.18) inset;
+    padding:0;
+  }
+  .ec-swatch.on{ border-color:#fff; }
+  .ec-swatch.clear{
+    background:rgba(255,255,255,0.06); color:#8A93AC;
+    font-size:16px; line-height:1;
+  }
+
+  /* Church page: logo, tagline, socials, call-to-action (see CHURCH PAGE EDITING) */
+  .profile-logo{
+    width:84px; height:84px; border-radius:50%; flex:none;
+    background-size:cover; background-position:center;
+    border:3px solid var(--card); box-shadow:0 2px 10px rgba(0,0,0,0.25);
+    position:relative; z-index:2; margin-bottom:12px;
+    display:flex; align-items:center; justify-content:center;
+    font-size:26px; font-weight:600; color:#fff;
+  }
+  /* Only overlap upward when there's a 260px banner photo to sit against —
+     with the plain 8px colour strip there's nothing to overlap into. */
+  .profile-logo.overlaps{ margin-top:-56px; }
+  .profile-tagline{ font-size:15px; color:var(--ink-soft); margin:0 0 10px; font-style:italic; }
+  .profile-cta{
+    display:inline-block; margin:0 0 20px; padding:0 22px; height:44px; line-height:44px;
+    border-radius:9px; font-family:'Inter',sans-serif; font-weight:600; font-size:14px;
+    text-decoration:none; color:#fff;
+  }
+  .profile-socials{ display:flex; flex-wrap:wrap; gap:10px; margin:0 0 22px; }
+  .profile-social{
+    display:inline-block; padding:6px 14px; border-radius:20px;
+    border:1px solid var(--line); text-decoration:none;
+    font-size:12.5px; font-weight:600; color:var(--ink-soft);
+  }
+  .profile-social:hover{ border-color:var(--brass); color:var(--brass); }
+  /* Owner-only pencil, top-right of the banner (see showDetail) */
+  .profile-edit-btn{
+    position:absolute; top:12px; right:12px; z-index:3;
+    width:38px; height:38px; border-radius:50%; padding:0;
+    display:inline-flex; align-items:center; justify-content:center;
+    background:rgba(10,10,10,0.62); border:1px solid rgba(255,255,255,0.28);
+    cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,0.3);
+  }
+  .profile-edit-btn:hover{ border-color:var(--brass); background:rgba(10,10,10,0.82); }
 
   /* Tier page */
   .tier-inner{ max-width:920px; text-align:left; }
@@ -2972,6 +3082,14 @@
     display:block; font-size:11px; letter-spacing:0.08em; text-transform:uppercase;
     color:#9AA3BD; margin-bottom:6px; font-weight:600;
   }
+  .auth-field textarea{
+    width:100%; box-sizing:border-box; resize:vertical;
+    border:1px solid rgba(255,255,255,0.16); border-radius:8px; padding:12px 14px;
+    font-family:'Inter',sans-serif; font-size:14px; line-height:1.5;
+    background:rgba(255,255,255,0.06); color:var(--parchment);
+  }
+  .auth-field textarea::placeholder{ color:#8A93AC; }
+  .auth-field textarea:focus{ outline:2px solid var(--brass); outline-offset:1px; }
   .auth-field input, .auth-field select{
     width:100%; height:46px; box-sizing:border-box;
     border:1px solid rgba(255,255,255,0.16); border-radius:8px; padding:0 14px;
@@ -3312,6 +3430,10 @@
         <span class="gate-btn-title">Church Attendee</span>
         <span class="gate-btn-sub">Find a church near you</span>
       </button>
+      <button class="gate-btn" id="btnLeader">
+        <span class="gate-btn-title">Church Leader</span>
+        <span class="gate-btn-sub">Manage your church&rsquo;s page</span>
+      </button>
     </div>
     <p class="auth-alt" style="text-align:center;max-width:420px;margin:26px auto 0;">
       Already have an account? <button class="auth-linkbtn" id="lpSignInBtn">Sign in</button>
@@ -3612,6 +3734,26 @@
   <div class="gate-inner account-inner">
     <button class="back-link" id="postBackBtn" style="padding-top:0;">&larr; Back</button>
     <div id="postBody"></div>
+  </div>
+</div>
+
+<!-- EP-1: church page editor, reachable at #edit-church-<id> from the pencil
+     on a church's own page (owner only) or the LP-1 "Church Leader" button.
+     Edits are stored as an overlay, never written into the directory data —
+     see dev note CHURCH PAGE EDITING. Body rendered by renderEditChurch();
+     routeFromHash() checks ownership before showing it. -->
+<div class="gate-wrap" id="editChurchWrap" style="display:none;">
+  <svg class="rose gate-rose" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+    <g stroke="#EDEAE0" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M-20,200 C-4,178 20,158 42,161 C64,164 80,180 95,200 Z" fill="#EDEAE0" fill-opacity="0.10" stroke="none"/>
+      <path d="M15,200 C35,168 65,140 100,138 C138,136 172,160 222,185 L222,200 Z" fill="#EDEAE0" fill-opacity="0.18" stroke-width="1.4"/>
+      <line x1="100" y1="80" x2="100" y2="138" stroke-width="2.2"/>
+      <line x1="80" y1="100" x2="120" y2="100" stroke-width="2.2"/>
+    </g>
+  </svg>
+  <div class="gate-inner account-inner">
+    <button class="back-link" id="editChurchBackBtn" style="padding-top:0;">&larr; Back to your page</button>
+    <div id="editChurchBody"></div>
   </div>
 </div>
 
@@ -4508,6 +4650,7 @@ var accountWrap = document.getElementById('accountWrap');
 var adminWrap = document.getElementById('adminWrap');
 var adminAccountsWrap = document.getElementById('adminAccountsWrap');
 var postWrap = document.getElementById('postWrap');
+var editChurchWrap = document.getElementById('editChurchWrap');
 var heroSection = document.getElementById('heroSection');
 var pageIdFixed = document.getElementById('pageIdFixed');
 var detailMap = null;
@@ -4515,7 +4658,7 @@ var detailMap = null;
 // Updates the persistent bottom-left ID badge. 'detail' view is handled separately
 // in showDetail() (it needs the specific church id, e.g. FC-2 or R-4, not a static one).
 function updatePageIdBadge(view){
-  var ids = { welcome:'IC-1', landing:'LP-1', search:'SR-1', tiers:'TP-1', tiersLocked:'TP-1', donate:'DN-1', quiz:'QZ-1', pastor:'PI-1', chat:'CV-1', auth:'AU-1', verify:'VF-1', account:'AC-1', admin:'AD-1', adminAccounts:'AD-2', reset:'PR-1', post:'EV-1' };
+  var ids = { welcome:'IC-1', landing:'LP-1', search:'SR-1', tiers:'TP-1', tiersLocked:'TP-1', donate:'DN-1', quiz:'QZ-1', pastor:'PI-1', chat:'CV-1', auth:'AU-1', verify:'VF-1', account:'AC-1', admin:'AD-1', adminAccounts:'AD-2', reset:'PR-1', post:'EV-1', editChurch:'EP-1' };
   if(ids[view]) pageIdFixed.textContent = ids[view];
 }
 
@@ -4539,6 +4682,9 @@ function setView(view){
   // typed text) so a later visit starts clean rather than resuming a stale
   // half-written post.
   if(currentView === 'post' && view !== 'post'){ resetPostState(); }
+  // Leaving EP-1 abandons a half-finished edit, so reopening the editor
+  // starts from what's actually saved rather than a stale draft.
+  if(currentView === 'editChurch' && view !== 'editChurch'){ resetChurchEditState(); }
   icWrap.style.display = view==='welcome' ? 'flex' : 'none';
   landingWrap.style.display = view==='landing' ? 'flex' : 'none';
   tierWrap.style.display = view==='tiers' ? 'flex' : 'none';
@@ -4554,6 +4700,7 @@ function setView(view){
   adminWrap.style.display = view==='admin' ? 'flex' : 'none';
   adminAccountsWrap.style.display = view==='adminAccounts' ? 'flex' : 'none';
   postWrap.style.display = view==='post' ? 'flex' : 'none';
+  editChurchWrap.style.display = view==='editChurch' ? 'flex' : 'none';
   // Re-render on every entry, not once at startup — a thread can gain messages
   // mid-session, so a stale render would hide exactly what you came to check.
   if(view==='pastor'){ renderPastorList(); }
@@ -4567,6 +4714,7 @@ function setView(view){
   if(view==='admin'){ renderAdmin(); }
   if(view==='adminAccounts'){ renderAdminAccounts(); }
   if(view==='post'){ renderPost(); }
+  if(view==='editChurch'){ renderEditChurch(); }
   // The pill is hidden on the auth screens themselves (you're already there) and
   // on IC-1 (the icebreaker should be the only thing on screen).
   renderAcctPill(view);
@@ -4620,9 +4768,40 @@ var currentView = null;
 // different church". Cleared in setView() whenever we leave the detail view.
 var currentDetailId = null;
 
+// Resolve a church id to a place-shaped object. Prefers the live result set
+// (it carries `dist` and any Overpass enrichment), but falls back to the
+// directory itself so a church can always be opened by id — a pastor's own
+// church won't be in `currentPlaces` unless the current search happens to
+// cover it, and that's exactly the link LP-1's "Church Leader" door follows.
+function placeForChurchId(id){
+  var live = currentPlaces.filter(function(x){ return x.id===id; })[0];
+  if(live) return live;
+  var c = findClaimableChurch(id);
+  if(!c) return null;
+  var isSeed = String(id).indexOf('FC-') === 0;
+  return {
+    id: c.id, name: c.name, denom: c.denom || '', g: c.g || '',
+    lat: c.lat, lon: c.lon, address: c.address || '',
+    phone: c.phone || '', website: c.website || '', email: c.email || '',
+    hours: c.hours || '', serviceTimes: c.serviceTimes || '',
+    description: c.description || '', wheelchair: c.wheelchair || '',
+    wikipedia: c.wikipedia || '', photo: c.photo || '',
+    pastor: c.pastor || '', featured: isSeed,
+    // No search centre to measure from when we got here by deep link; the
+    // Distance row is skipped rather than shown as a made-up number.
+    dist: lastCenter ? haversine(lastCenter.lat, lastCenter.lon, c.lat, c.lon) : null
+  };
+}
+
 function showDetail(id){
-  var p = currentPlaces.filter(function(x){ return x.id===id; })[0];
+  var p = placeForChurchId(id);
   if(!p){ location.hash='attendee'; return; }
+  // Layer on any edits the claiming pastor has made (see dev note CHURCH
+  // PAGE EDITING). Everything below reads from the merged copy, so the rest
+  // of this function doesn't need to know an override exists — but NOTE that
+  // several of these fields are now PASTOR-TYPED rather than directory data,
+  // which is why they're escaped/link-validated below where they used not to be.
+  p = applyChurchProfile(p);
   // showDetail() is called by routeFromHash(), which runs at the end of EVERY
   // renderResults() — including the background seed-geocode pass and any
   // denomination/radius re-filter. Re-rendering the same church for no reason
@@ -4639,14 +4818,15 @@ function showDetail(id){
   var fields = '';
   fields += '<div class="profile-field"><span class="k">Page ID</span><span class="v" style="font-family:monospace;font-weight:600;">'+p.id+'</span></div>';
   if(p.address) fields += '<div class="profile-field"><span class="k">Address</span><span class="v">'+addressLinkHtml(p)+'</span></div>';
-  if(p.phone) fields += '<div class="profile-field"><span class="k">Phone</span><span class="v"><a href="tel:'+p.phone.replace(/[^0-9+]/g,'')+'">'+p.phone+'</a></span></div>';
-  if(p.website) fields += '<div class="profile-field"><span class="k">Website</span><span class="v"><a href="'+p.website+'" target="_blank" rel="noopener">'+p.website.replace(/^https?:\/\//,'')+'</a></span></div>';
-  if(p.email) fields += '<div class="profile-field"><span class="k">Email</span><span class="v"><a href="mailto:'+p.email+'">'+p.email+'</a></span></div>';
-  if(p.serviceTimes) fields += '<div class="profile-field"><span class="k">Service times</span><span class="v">'+p.serviceTimes+'</span></div>';
+  if(p.phone) fields += '<div class="profile-field"><span class="k">Phone</span><span class="v"><a href="tel:'+escapeHtml(String(p.phone).replace(/[^0-9+]/g,''))+'">'+escapeHtml(p.phone)+'</a></span></div>';
+  var siteLink = safeLink(p.website);
+  if(siteLink) fields += '<div class="profile-field"><span class="k">Website</span><span class="v"><a href="'+escapeHtml(siteLink)+'" target="_blank" rel="noopener">'+escapeHtml(siteLink.replace(/^https?:\/\//,''))+'</a></span></div>';
+  if(p.email) fields += '<div class="profile-field"><span class="k">Email</span><span class="v"><a href="mailto:'+escapeHtml(p.email)+'">'+escapeHtml(p.email)+'</a></span></div>';
+  if(p.serviceTimes) fields += '<div class="profile-field"><span class="k">Service times</span><span class="v">'+escapeHtml(p.serviceTimes)+'</span></div>';
   if(p.hours) fields += '<div class="profile-field"><span class="k">Hours</span><span class="v">'+p.hours+'</span></div>';
   if(p.wheelchair) fields += '<div class="profile-field"><span class="k">Wheelchair access</span><span class="v">'+(p.wheelchair==='yes'?'Accessible':p.wheelchair==='no'?'Not accessible':p.wheelchair)+'</span></div>';
   if(p.wikipedia) fields += '<div class="profile-field"><span class="k">More info</span><span class="v"><a href="https://en.wikipedia.org/wiki/'+encodeURIComponent(p.wikipedia.split(':').pop())+'" target="_blank" rel="noopener">Wikipedia</a></span></div>';
-  fields += '<div class="profile-field"><span class="k">Distance</span><span class="v">'+p.dist.toFixed(1)+' mi from search location</span></div>';
+  if(p.dist != null) fields += '<div class="profile-field"><span class="k">Distance</span><span class="v">'+p.dist.toFixed(1)+' mi from search location</span></div>';
 
   var bandStyle = p.photo
     ? 'background-image:url(\''+p.photo+'\')'
@@ -4741,19 +4921,60 @@ function showDetail(id){
       '</div>'
     : '';
 
+  // ---- pastor-edited page furniture (logo / tagline / CTA / socials) ----
+  // All optional; a church with no edits renders exactly as it did before.
+  var accent = safeAccent(p.accent);
+  var editingAllowed = canEditChurch(currentAccount(), p.id);
+  var logoHtml = safePhoto(p.logo)
+    ? '<span class="profile-logo'+(p.photo ? ' overlaps' : '')+'" style="background-image:url(\''+p.logo+'\')"></span>'
+    : '';
+  var taglineHtml = p.tagline
+    ? '<p class="profile-tagline">'+escapeHtml(p.tagline)+'</p>'
+    : '';
+  var ctaHtml = '';
+  if(p.cta && p.cta.label && safeLink(p.cta.url)){
+    ctaHtml = '<a class="profile-cta" href="'+escapeHtml(safeLink(p.cta.url))+'" target="_blank" rel="noopener" '+
+      'style="background:'+(accent || color)+'">'+escapeHtml(p.cta.label)+'</a>';
+  }
+  var socialsHtml = '';
+  if(p.socials){
+    var socialLinks = CHURCH_SOCIALS.map(function(s){
+      var url = safeLink(p.socials[s.key]);
+      if(!url) return '';
+      return '<a class="profile-social" href="'+escapeHtml(url)+'" target="_blank" rel="noopener">'+escapeHtml(s.label)+'</a>';
+    }).filter(Boolean).join('');
+    if(socialLinks) socialsHtml = '<div class="profile-socials">'+socialLinks+'</div>';
+  }
+  // Pencil, top-right of the banner — only for the pastor who claims this
+  // church. Everyone else's page is byte-for-byte what it was.
+  var editBtnHtml = editingAllowed
+    ? '<button class="profile-edit-btn" id="editChurchBtn" title="Edit this page" aria-label="Edit this page">'+
+        '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#F2F0E8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+
+          '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/>'+
+        '</svg>'+
+      '</button>'
+    : '';
+  // A pastor's own colour themes the plain band strip; with a banner photo
+  // the photo is the header, so there's nothing to tint.
+  var bandColorStyle = (!p.photo && accent) ? 'background:'+accent : bandStyle;
+
   detailWrap.innerHTML =
     '<button class="back-link" id="backBtn">&larr; Back to results</button>'+
     '<div class="profile-card'+(p.featured ? ' vigil' : '')+'"'+cardStyle+'>'+
-      '<div class="'+bandClass+'" style="'+bandStyle+'"></div>'+
+      '<div class="'+bandClass+'" style="'+bandColorStyle+'">'+editBtnHtml+'</div>'+
       '<div class="profile-body">'+
+        logoHtml+
         '<div class="profile-badges">'+
           '<span class="pew-denom" style="background:'+color+'22;color:'+color+'">'+labelFor(p.denom)+'</span>'+
           (p.featured ? '<span class="pew-featured">Featured</span>' : '')+
           '<span class="pew-id">'+p.id+'</span>'+
         '</div>'+
         '<h1 class="profile-title">'+p.name+'</h1>'+
+        taglineHtml+
         (p.address ? '<p class="profile-dist">'+addressLinkHtml(p)+'</p>' : '')+
-        (p.description ? '<p class="profile-desc">'+p.description+'</p>' : '')+
+        ctaHtml+
+        socialsHtml+
+        (p.description ? '<p class="profile-desc">'+escapeHtml(p.description)+'</p>' : '')+
         '<div class="profile-grid">'+fields+'</div>'+
         '<div id="detailMap"></div>'+
         contactBlock+
@@ -4764,6 +4985,8 @@ function showDetail(id){
 
   currentDetailId = id;
   document.getElementById('backBtn').addEventListener('click', function(){ location.hash='attendee'; });
+  var editChurchBtn = document.getElementById('editChurchBtn');
+  if(editChurchBtn) editChurchBtn.addEventListener('click', function(){ location.hash = 'edit-church-'+p.id; });
   if(pastorAccountForP) wirePastorContact(p);
 
   if(detailMap){ detailMap.remove(); detailMap = null; }
@@ -4884,6 +5107,29 @@ function routeFromHash(){
     if(currentView === 'post') return;
     setView('post'); return;
   }
+  // EP-1: editing a church's own page. Ownership is re-checked here rather
+  // than trusted from whoever linked here — a hand-typed
+  // #edit-church-FC-1 from someone who doesn't claim FC-1 lands on that
+  // church's normal page instead. See dev note CHURCH PAGE EDITING.
+  if(hash.indexOf('edit-church-') === 0){
+    var editId = hash.slice('edit-church-'.length);
+    var editor = currentAccount();
+    if(!editor){ requireAuth(hash); return; }
+    if(!canEditChurch(editor, editId)){ location.hash = 'church-'+editId; return; }
+    if(currentView === 'editChurch' && editingChurchId === editId) return;
+    if(editingChurchId !== editId) resetChurchEditState();
+    editingChurchId = editId;
+    setView('editChurch'); return;
+  }
+  // LP-1's "Church Leader" door. Resolves to wherever that person actually
+  // needs to be: sign in, claim a listing, or their own church's page.
+  if(hash === 'leader'){
+    var leader = currentAccount();
+    if(!leader){ requireAuth('leader'); return; }
+    if(leader.role !== 'pastor'){ location.hash = 'account'; return; }
+    if(!leader.churchId){ location.hash = 'account'; return; }
+    location.hash = 'church-'+leader.churchId; return;
+  }
   // PI-1 is no longer wide open: it holds real people's messages, so it needs a
   // verified PASTOR account. A signed-in attendee is bounced to their own side
   // rather than shown someone else's inbox. Owning your personal email isn't
@@ -4915,7 +5161,10 @@ function routeFromHash(){
   if(hash === 'attendee'){ setView('search'); return; }
   if(hash.indexOf('church-')===0){
     var id = hash.slice('church-'.length);
-    if(currentPlaces.some(function(p){ return p.id===id; })){ showDetail(id); return; }
+    // placeForChurchId() falls back to the directory, so a deep link to any
+    // FC-n/LC-n church works even before a search has been run. Only the
+    // session-only R-n ids (which don't survive a new search) can miss.
+    if(placeForChurchId(id)){ showDetail(id); return; }
     location.hash = 'attendee';
     return;
   }
@@ -4925,6 +5174,7 @@ window.addEventListener('hashchange', routeFromHash);
 
 document.getElementById('btnMember').addEventListener('click', function(){ location.hash = 'tiers'; });
 document.getElementById('btnAttendee').addEventListener('click', function(){ location.hash = 'attendee'; });
+document.getElementById('btnLeader').addEventListener('click', function(){ location.hash = 'leader'; });
 // LP-1 account links. A returning pastor shouldn't have to guess that the way
 // back to their inbox is the small pill in the corner.
 document.getElementById('lpSignInBtn').addEventListener('click', function(){ location.hash = 'signin'; });
@@ -5818,7 +6068,7 @@ function openThread(threadId, role){
 //     delivery via EmailJS (see sendVerificationEmail(), just above
 //     issueVerificationCode()). No backend involved — EmailJS sends straight
 //     from the browser using a public key that's meant to be client-side.
-var STORE_KEYS = { accounts:'cf.accounts.v2', session:'cf.session.v2', lastSession:'cf.lastsession.v2', threads:'cf.threads.v2', events:'cf.events.v1', posts:'cf.posts.v1' };
+var STORE_KEYS = { accounts:'cf.accounts.v2', session:'cf.session.v2', lastSession:'cf.lastsession.v2', threads:'cf.threads.v2', events:'cf.events.v1', posts:'cf.posts.v1', churchProfiles:'cf.churchprofiles.v1' };
 
 // TWO STORAGE SCOPES, and the split matters:
 //   localStorage   — accounts + threads. SHARED by every tab. This is the
@@ -7158,6 +7408,116 @@ function canPostForChurch(account, churchId){
 }
 function findEvent(id){ return loadEvents().filter(function(e){ return e.id === id; })[0] || null; }
 
+// ---- CHURCH PAGE EDITING (EP-1) ----
+// A claiming pastor can edit how their church's page looks and reads. The
+// directory itself is READ-ONLY — SEED_CHURCHES is hardcoded and
+// LOCAL_CHURCHES is a 3146-entry embedded dataset — so edits are never
+// written back into either. They're stored as an OVERLAY keyed by church id
+// and layered on top of the base record at render time
+// (applyChurchProfile(), called at the top of showDetail()). That keeps the
+// shipped data intact, makes any edit revertible by deleting one key, and
+// means a church with no edits renders byte-for-byte as it did before.
+//
+// DELIBERATELY NOT OVERRIDDEN: the search-card stripe and the map pin colour.
+// Those stay denomination-coded, because the SR-1 legend and the map explain
+// themselves in terms of denomination — letting a pastor pick purple would
+// make both of them lie. accent themes the church's own PAGE only.
+function loadChurchProfiles(){ return STORE.get(STORE_KEYS.churchProfiles, {}); }
+function saveChurchProfiles(map){ STORE.set(STORE_KEYS.churchProfiles, map); }
+function churchProfileFor(churchId){
+  if(!churchId) return {};
+  return loadChurchProfiles()[churchId] || {};
+}
+// Same ownership rule as posting — the pastor account whose churchId IS this
+// church, not just any pastor. See canPostForChurch().
+function canEditChurch(account, churchId){ return canPostForChurch(account, churchId); }
+
+// A six-digit hex colour or nothing. Interpolated into inline styles, so
+// anything else is dropped rather than escaped (same rule as safePhoto()).
+var SAFE_HEX_RE = /^#[0-9a-fA-F]{6}$/;
+function safeAccent(hex){ return (typeof hex === 'string' && SAFE_HEX_RE.test(hex)) ? hex : null; }
+// A link that is safe to put in an href. Only http/https survive — a
+// 'javascript:' or 'data:' URL here would run as script on click, and these
+// values are typed by a pastor (and readable/writable in localStorage by
+// anyone on that browser), so this is a real injection surface, not theory.
+function safeLink(url){
+  var s = String(url || '').trim();
+  if(!s) return null;
+  if(!/^https?:\/\//i.test(s)) return null;
+  // No quotes/angle brackets/whitespace — belt and braces alongside the
+  // escapeHtml() at each render site.
+  if(/["'<>\s]/.test(s)) return null;
+  return s;
+}
+// Returns a copy of the place with any pastor edits applied on top. Every
+// field is optional; an unedited church comes back unchanged.
+function applyChurchProfile(p){
+  if(!p || !p.id) return p;
+  var prof = churchProfileFor(p.id);
+  if(!prof || !Object.keys(prof).length) return p;
+  var out = {}; for(var k in p){ out[k] = p[k]; }
+  var banner = safePhoto(prof.banner);
+  if(banner) out.photo = banner;                    // .profile-band reads p.photo
+  if(safePhoto(prof.logo)) out.logo = prof.logo;
+  if(safeAccent(prof.accent)) out.accent = prof.accent;
+  if(prof.tagline) out.tagline = prof.tagline;
+  if(prof.about) out.description = prof.about;
+  if(prof.serviceTimes) out.serviceTimes = prof.serviceTimes;
+  if(prof.phone) out.phone = prof.phone;
+  if(prof.website) out.website = prof.website;
+  if(prof.email) out.email = prof.email;
+  if(prof.cta && prof.cta.label && safeLink(prof.cta.url)) out.cta = prof.cta;
+  if(prof.socials) out.socials = prof.socials;
+  return out;
+}
+// The social networks a church page can link out to. Order here is the order
+// they render in. Keep the keys stable — they're persisted.
+var CHURCH_SOCIALS = [
+  { key:'facebook',  label:'Facebook'  },
+  { key:'instagram', label:'Instagram' },
+  { key:'youtube',   label:'YouTube'   },
+  { key:'x',         label:'X'         },
+  { key:'tiktok',    label:'TikTok'    }
+];
+
+// Banner version of readImageAsAvatar() — same pipeline (FileReader -> canvas
+// -> JPEG data URI, every failure path calling back with a readable reason),
+// but a wide centre crop instead of a square one, because it renders into
+// .profile-band.has-photo (260px tall, full card width). 1200x400 covers that
+// at background-size:cover on a high-DPI screen without the file getting
+// silly — measured around 60-150KB depending on the photo.
+var BANNER_W = 1200, BANNER_H = 400;
+function readImageAsBanner(file, cb){
+  if(!file){ cb('No file chosen.'); return; }
+  if(!/^image\//.test(file.type || '')){ cb('That file isn’t an image.'); return; }
+  if(file.size > 12 * 1024 * 1024){ cb('That image is too big — pick one under 12 MB.'); return; }
+  var reader = new FileReader();
+  reader.onerror = function(){ cb('Couldn’t read that file.'); };
+  reader.onload = function(){
+    var img = new Image();
+    img.onerror = function(){ cb('That image couldn’t be opened.'); };
+    img.onload = function(){
+      try{
+        if(!img.width || !img.height){ cb('That image looks empty.'); return; }
+        // Centre-crop to the banner's aspect ratio, then scale to fit.
+        var targetRatio = BANNER_W / BANNER_H;
+        var srcW = img.width, srcH = img.height;
+        var cropW = srcW, cropH = srcW / targetRatio;
+        if(cropH > srcH){ cropH = srcH; cropW = srcH * targetRatio; }
+        var canvas = document.createElement('canvas');
+        canvas.width = BANNER_W; canvas.height = BANNER_H;
+        canvas.getContext('2d').drawImage(
+          img, (srcW - cropW)/2, (srcH - cropH)/2, cropW, cropH,
+          0, 0, BANNER_W, BANNER_H
+        );
+        cb(null, canvas.toDataURL('image/jpeg', 0.82));
+      }catch(e){ cb('That image couldn’t be processed.'); }
+    };
+    img.src = reader.result;
+  };
+  reader.readAsDataURL(file);
+}
+
 // ---- AC-1 profile editing state ----
 // Module-level on purpose, same reasoning as the VF-1/PR-1 send-status
 // trackers: refreshThreadsFromStorage() re-renders AC-1 in the background
@@ -7723,6 +8083,285 @@ function renderPost(){
   });
 }
 
+// ---- EP-1: church page editor ----
+// Module-level for the same reason profileDraft/postDraft are: a background
+// re-render must never wipe a half-finished edit. `churchEditDraft` holds the
+// working copy; it's seeded from the saved overlay on first render of a given
+// church and only written back to storage on Save. Image fields use three
+// states like profileDraft.photo does — undefined means "unchanged", null
+// means "remove it", a string means "this new one".
+var editingChurchId = null;
+var churchEditDraft = null;
+var churchEditNote = null;
+var churchEditNoteClass = '';
+function resetChurchEditState(){
+  editingChurchId = null; churchEditDraft = null;
+  churchEditNote = null; churchEditNoteClass = '';
+}
+// Reads the form back into the draft so a re-render (or an image upload,
+// which re-renders to show the new preview) doesn't lose typed text.
+function captureChurchEditDraft(){
+  if(!churchEditDraft) return;
+  [['ecTagline','tagline'],['ecAbout','about'],['ecServiceTimes','serviceTimes'],
+   ['ecPhone','phone'],['ecWebsite','website'],['ecEmail','email'],
+   ['ecCtaLabel','ctaLabel'],['ecCtaUrl','ctaUrl'],['ecAccent','accent']
+  ].forEach(function(pair){
+    var el = document.getElementById(pair[0]);
+    if(el) churchEditDraft[pair[1]] = el.value;
+  });
+  CHURCH_SOCIALS.forEach(function(s){
+    var el = document.getElementById('ecSocial-'+s.key);
+    if(el) churchEditDraft.socials[s.key] = el.value;
+  });
+}
+// A palette rather than a free colour picker: every swatch is already part of
+// this app's visual language, so a pastor can't pick something illegible
+// against the page. The picker still accepts any valid hex typed in, since
+// safeAccent() validates on the way in and out either way.
+var CHURCH_ACCENTS = ['#C9A227','#6B2737','#2F5233','#4B3B63','#14213D','#4A6670','#9C5A2B','#2A6B6B'];
+
+function renderEditChurch(){
+  var body = document.getElementById('editChurchBody');
+  var account = currentAccount();
+  var churchId = editingChurchId;
+  // Ownership is enforced on the route too; this is the second gate, so a
+  // stale view can never keep editing after a sign-out or a relink.
+  if(!account || !canEditChurch(account, churchId)){ location.hash = 'landing'; return; }
+  var base = placeForChurchId(churchId);
+  if(!base){ location.hash = 'account'; return; }
+
+  if(!churchEditDraft){
+    var saved = churchProfileFor(churchId);
+    churchEditDraft = {
+      logo: undefined, banner: undefined,
+      accent: saved.accent || '',
+      tagline: saved.tagline || '',
+      about: saved.about || '',
+      serviceTimes: saved.serviceTimes || '',
+      phone: saved.phone || '', website: saved.website || '', email: saved.email || '',
+      ctaLabel: (saved.cta && saved.cta.label) || '',
+      ctaUrl: (saved.cta && saved.cta.url) || '',
+      socials: {}
+    };
+    CHURCH_SOCIALS.forEach(function(s){
+      churchEditDraft.socials[s.key] = (saved.socials && saved.socials[s.key]) || '';
+    });
+  }
+  var savedProfile = churchProfileFor(churchId);
+  var shownLogo = churchEditDraft.logo === undefined ? savedProfile.logo : churchEditDraft.logo;
+  var shownBanner = churchEditDraft.banner === undefined ? savedProfile.banner : churchEditDraft.banner;
+  var accentNow = safeAccent(churchEditDraft.accent) || '';
+
+  function field(id, label, value, placeholder, maxlen){
+    return '<div class="auth-field"><label for="'+id+'">'+escapeHtml(label)+'</label>'+
+      '<input type="text" id="'+id+'" maxlength="'+(maxlen||120)+'" placeholder="'+escapeHtml(placeholder||'')+'" value="'+escapeHtml(value||'')+'"></div>';
+  }
+
+  body.innerHTML =
+    '<p class="eyebrow">Your church page</p>'+
+    '<h1 class="gate-title" style="max-width:none;">Edit '+escapeHtml(base.name)+'</h1>'+
+    '<p class="gate-sub" style="margin-left:0;text-align:left;max-width:none;">Only you can edit this page. Everything here is optional — anything you leave blank keeps whatever the directory already had.</p>'+
+    (churchEditNote ? '<p class="auth-note '+churchEditNoteClass+'" id="ecNote">'+escapeHtml(churchEditNote)+'</p>' : '')+
+
+    // ---- images ----
+    '<div class="account-card">'+
+      '<p class="ec-section-title">Banner photo</p>'+
+      '<div class="ec-banner-preview'+(safePhoto(shownBanner) ? '' : ' empty')+'"'+
+        (safePhoto(shownBanner) ? ' style="background-image:url(\''+shownBanner+'\')"' : '')+'>'+
+        (safePhoto(shownBanner) ? '' : 'No banner yet')+
+      '</div>'+
+      '<div class="account-actions" style="margin-top:12px;">'+
+        '<label class="account-btn" for="ecBannerInput" style="cursor:pointer;">Choose banner</label>'+
+        '<input type="file" id="ecBannerInput" accept="image/*" hidden>'+
+        (safePhoto(shownBanner) ? '<button class="account-btn" id="ecBannerRemove">Remove</button>' : '')+
+      '</div>'+
+      '<p class="auth-hint">A wide photo of your building or congregation works best — it gets cropped to a banner shape.</p>'+
+    '</div>'+
+
+    '<div class="account-card">'+
+      '<p class="ec-section-title">Church logo</p>'+
+      '<div class="ec-logo-row">'+
+        (safePhoto(shownLogo)
+          ? '<span class="ec-logo-preview" style="background-image:url(\''+shownLogo+'\')"></span>'
+          : '<span class="ec-logo-preview empty">'+escapeHtml(initialsFor(base.name))+'</span>')+
+        '<div class="account-actions" style="margin:0;">'+
+          '<label class="account-btn" for="ecLogoInput" style="cursor:pointer;">Choose logo</label>'+
+          '<input type="file" id="ecLogoInput" accept="image/*" hidden>'+
+          (safePhoto(shownLogo) ? '<button class="account-btn" id="ecLogoRemove">Remove</button>' : '')+
+        '</div>'+
+      '</div>'+
+    '</div>'+
+
+    // ---- colour ----
+    '<div class="account-card">'+
+      '<p class="ec-section-title">Page colour</p>'+
+      '<p class="auth-hint" style="margin:0 0 12px;">Themes this page only. Your pin on the map and your card in search results stay coloured by denomination, so the map legend keeps making sense.</p>'+
+      '<div class="ec-swatches">'+
+        CHURCH_ACCENTS.map(function(hex){
+          return '<button type="button" class="ec-swatch'+(accentNow.toLowerCase()===hex.toLowerCase()?' on':'')+
+            '" data-accent="'+hex+'" style="background:'+hex+'" title="'+hex+'"></button>';
+        }).join('')+
+        '<button type="button" class="ec-swatch clear'+(accentNow?'':' on')+'" data-accent="" title="Use denomination colour">&times;</button>'+
+      '</div>'+
+      '<input type="hidden" id="ecAccent" value="'+escapeHtml(accentNow)+'">'+
+    '</div>'+
+
+    // ---- words ----
+    '<div class="account-card">'+
+      '<p class="ec-section-title">About your church</p>'+
+      field('ecTagline','Tagline', churchEditDraft.tagline, 'One line under your name', 90)+
+      '<div class="auth-field"><label for="ecAbout">Description</label>'+
+        '<textarea id="ecAbout" maxlength="1200" rows="5" placeholder="Who you are, what a first visit looks like, what you believe.">'+escapeHtml(churchEditDraft.about||'')+'</textarea></div>'+
+      field('ecServiceTimes','Service times', churchEditDraft.serviceTimes, 'e.g. Sundays 9am & 11am, Wednesdays 7pm', 200)+
+    '</div>'+
+
+    // ---- contact ----
+    '<div class="account-card">'+
+      '<p class="ec-section-title">Contact details</p>'+
+      '<p class="auth-hint" style="margin:0 0 12px;">The directory’s map data is often out of date. Anything you put here replaces it on your page.</p>'+
+      field('ecPhone','Phone', churchEditDraft.phone, base.phone || '(661) 555-0100', 40)+
+      field('ecWebsite','Website', churchEditDraft.website, base.website || 'https://yourchurch.org')+
+      field('ecEmail','Email', churchEditDraft.email, base.email || 'hello@yourchurch.org')+
+    '</div>'+
+
+    // ---- call to action ----
+    '<div class="account-card">'+
+      '<p class="ec-section-title">Main button</p>'+
+      '<p class="auth-hint" style="margin:0 0 12px;">A single prominent button at the top of your page. Both fields are needed for it to show.</p>'+
+      field('ecCtaLabel','Button text', churchEditDraft.ctaLabel, 'e.g. Plan your visit', 30)+
+      field('ecCtaUrl','Button link', churchEditDraft.ctaUrl, 'https://…')+
+    '</div>'+
+
+    // ---- socials ----
+    '<div class="account-card">'+
+      '<p class="ec-section-title">Social links</p>'+
+      CHURCH_SOCIALS.map(function(s){
+        return field('ecSocial-'+s.key, s.label, churchEditDraft.socials[s.key], 'https://…');
+      }).join('')+
+    '</div>'+
+
+    '<div class="account-actions" style="margin-top:20px;">'+
+      '<button class="account-btn primary" id="ecSave">Save changes</button>'+
+      '<button class="account-btn" id="ecViewPage">View page</button>'+
+      '<button class="account-btn" id="ecPostEvent">Post an event</button>'+
+    '</div>'+
+    '<p class="auth-hint" style="margin-top:18px;">Your page lives in this browser for now, like everything else in this test build — it won’t appear on another device until there’s a server behind this.</p>';
+
+  // ---- wiring ----
+  var accentInput = document.getElementById('ecAccent');
+  body.querySelectorAll('[data-accent]').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      captureChurchEditDraft();
+      churchEditDraft.accent = btn.getAttribute('data-accent');
+      renderEditChurch();
+    });
+  });
+
+  function wireImagePicker(inputId, removeId, reader, key){
+    var input = document.getElementById(inputId);
+    if(input) input.addEventListener('change', function(){
+      var file = input.files && input.files[0];
+      captureChurchEditDraft();
+      reader(file, function(err, dataUri){
+        if(err){
+          churchEditNote = err; churchEditNoteClass = 'error';
+          renderEditChurch();
+          return;
+        }
+        churchEditDraft[key] = dataUri;
+        churchEditNote = null; churchEditNoteClass = '';
+        renderEditChurch();
+      });
+    });
+    var remove = document.getElementById(removeId);
+    if(remove) remove.addEventListener('click', function(){
+      captureChurchEditDraft();
+      churchEditDraft[key] = null;   // null means "remove", vs undefined "unchanged"
+      renderEditChurch();
+    });
+  }
+  wireImagePicker('ecBannerInput','ecBannerRemove', readImageAsBanner, 'banner');
+  wireImagePicker('ecLogoInput','ecLogoRemove', readImageAsAvatar, 'logo');
+
+  document.getElementById('ecViewPage').addEventListener('click', function(){
+    location.hash = 'church-'+churchId;
+  });
+  document.getElementById('ecPostEvent').addEventListener('click', function(){
+    location.hash = 'post';
+  });
+  document.getElementById('ecSave').addEventListener('click', function(){
+    captureChurchEditDraft();
+    var d = churchEditDraft;
+    // Validate the links before anything is written, so a bad one is a
+    // fixable message rather than a silently dropped field.
+    var badLink = null;
+    if(d.website && !safeLink(d.website)) badLink = 'website';
+    if(!badLink && d.ctaUrl && !safeLink(d.ctaUrl)) badLink = 'button link';
+    if(!badLink){
+      CHURCH_SOCIALS.some(function(s){
+        if(d.socials[s.key] && !safeLink(d.socials[s.key])){ badLink = s.label + ' link'; return true; }
+        return false;
+      });
+    }
+    if(badLink){
+      churchEditNote = 'That ' + badLink + ' doesn’t look right — links need to start with https://';
+      churchEditNoteClass = 'error';
+      renderEditChurch();
+      return;
+    }
+    if(d.ctaLabel.trim() && !d.ctaUrl.trim()){
+      churchEditNote = 'Your button needs a link as well as a label.';
+      churchEditNoteClass = 'error';
+      renderEditChurch();
+      return;
+    }
+
+    var map = loadChurchProfiles();
+    var prof = map[churchId] || {};
+    // undefined = untouched, null = remove, string = replace.
+    if(d.logo !== undefined){ if(d.logo) prof.logo = d.logo; else delete prof.logo; }
+    if(d.banner !== undefined){ if(d.banner) prof.banner = d.banner; else delete prof.banner; }
+    function setOrClear(key, value){
+      var v = String(value || '').trim();
+      if(v) prof[key] = v; else delete prof[key];
+    }
+    setOrClear('accent', safeAccent(d.accent) || '');
+    setOrClear('tagline', d.tagline);
+    setOrClear('about', d.about);
+    setOrClear('serviceTimes', d.serviceTimes);
+    setOrClear('phone', d.phone);
+    setOrClear('website', d.website);
+    setOrClear('email', d.email);
+    if(d.ctaLabel.trim() && d.ctaUrl.trim()) prof.cta = { label: d.ctaLabel.trim(), url: d.ctaUrl.trim() };
+    else delete prof.cta;
+    var socials = {};
+    CHURCH_SOCIALS.forEach(function(s){
+      var v = String(d.socials[s.key] || '').trim();
+      if(v) socials[s.key] = v;
+    });
+    if(Object.keys(socials).length) prof.socials = socials; else delete prof.socials;
+    prof.updatedBy = account.email;
+    prof.updatedAt = Date.now();
+
+    if(Object.keys(prof).length <= 2) delete map[churchId];  // nothing but the stamps left
+    else map[churchId] = prof;
+
+    try{
+      saveChurchProfiles(map);
+    }catch(e){
+      // Images are the only thing here big enough to blow the storage quota.
+      churchEditNote = 'Couldn’t save — this browser’s storage is full. Try a smaller banner photo.';
+      churchEditNoteClass = 'error';
+      renderEditChurch();
+      return;
+    }
+    churchEditDraft = null;        // re-seed from what actually saved
+    churchEditNote = 'Saved. Your page is updated.';
+    churchEditNoteClass = 'success';
+    renderEditChurch();
+  });
+}
+
 // ---- ADMIN MODE (AD-1) ----
 // A separate, much simpler gate from the AU-1/VF-1/AC-1 account system above — see
 // dev note ADMIN MODE (AD-1) for the full shape. Short version: reveals the
@@ -8180,6 +8819,9 @@ document.getElementById('accountBackBtn').addEventListener('click', function(){ 
 document.getElementById('adminBackBtn').addEventListener('click', function(){ location.hash = 'landing'; });
 document.getElementById('adminAccountsBackBtn').addEventListener('click', function(){ location.hash = 'admin'; });
 document.getElementById('postBackBtn').addEventListener('click', function(){ location.hash = 'landing'; });
+document.getElementById('editChurchBackBtn').addEventListener('click', function(){
+  location.hash = editingChurchId ? 'church-'+editingChurchId : 'landing';
+});
 document.getElementById('adminMarker').addEventListener('click', function(){ location.hash = 'admin'; });
 
 // ---- thread ownership + persistence ----
