@@ -756,6 +756,53 @@
   implying reach it doesn't have. Keep that note if you restyle the page.
 
   ===== CHANGE LOG (most recent first) =====
+  - FIXED A REAL VERIFICATION BUG on VF-1 (#verify): routeFromHash() was
+    missing the same redundant-render guard already in place on
+    signin/signup, #account and #admin-accounts (see those dev notes).
+    Without it, geocodeSeeds()'s background callback re-firing
+    routeFromHash() for ~1s after any page load could rebuild VF-1's whole
+    form — including right as a click on #vfSubmit/#vfChurchSubmit was
+    being dispatched, landing that click on a detached button that never
+    fires submitVerifyEmail()/submitVerifyChurch(). The account is left
+    permanently stuck on #verify, never actually verified — and because
+    getSessionEmail() silently falls back to whatever a new tab inherits
+    (see its dev note), this failed QUIETLY rather than with an error:
+    currentAccount() kept returning session data belonging to whoever
+    verified most recently in that browser, not the account that just
+    got stuck. Found via Playwright automating three back-to-back
+    sign-ups (fast enough to reliably land inside that ~1s window) for
+    the EVENTS & POSTS work below — a real human typing a 6-digit code
+    rarely lands in that exact window, but it's a genuine bug, not just a
+    test artifact. Same one-line fix as the other three routes: skip the
+    render when already on #verify.
+  - ADDED EVENTS & POSTS (EV-1, reachable at #post) plus an SR-1 quick-action
+    row, per explicit request. A pastor of a claimed church can post an
+    EVENT (title/date/location/description) or a general/promotional
+    UPDATE; an attendee can only post a RECAP tied to a specific PAST
+    event, self-attested (no RSVP/check-in system exists to verify
+    participation, so — same honesty-over-fake-verification pattern as the
+    rest of this app — any signed-in attendee can recap any past event,
+    not just ones they proved they attended). New STORE_KEYS.events/posts,
+    loadEvents/saveEvents/loadPosts/savePosts, canPostForChurch(),
+    isEventPast(). Both live on the church's own detail page (new
+    "Upcoming events" and "Updates" sections in showDetail(), shown only
+    when there's actual content) — no separate global feed yet. Reused
+    the wireChurchPicker() shape for a new wireEventPicker() (attendee's
+    past-event search) and the AU-1/AC-1/admin-accounts redundant-render
+    guard for the #post route.
+    Also added a small quick-action row on SR-1 specifically (left edge,
+    top-anchored so its position never depends on scroll/content height):
+    Messages, Post, and Profile. Messages is themed as a dove (the Holy
+    Spirit) — buildDoveIcon() builds it once from layered SVG ellipses
+    (safer to get right than a hand-drawn path, still reads clearly at
+    button size); this is the app's canonical messaging icon going
+    forward, reuse it rather than duplicating the shape. Post uses an
+    ichthys (Jesus fish) built from two arcs + tail flare lines. A
+    left-side icon column needs matching left padding somewhere content
+    could otherwise sit under it — body.qa-on (toggled in setView() only
+    while view==='search') adds that padding to .hero/.results-wrap;
+    don't reposition the column without re-checking that padding still
+    clears it at both desktop and the 760px mobile breakpoint.
   - GATED THE DETAIL-PAGE "MESSAGE" FLOW on there being an actual claiming
     pastor account, per explicit request ("as an attendee you should only
     be able to message the churches if the churches have an active
@@ -2382,6 +2429,19 @@
     vertical-align:middle;
   }
 
+  /* Church detail page — Events / Updates (see EVENTS & POSTS dev note) */
+  .church-section{ margin-top:26px; padding-top:22px; border-top:1px solid var(--line); }
+  .profile-card.vigil .church-section{ border-top-color:rgba(255,255,255,0.14); }
+  .church-section-title{ font-size:15px; font-weight:700; margin:0 0 12px; }
+  .church-event-card, .church-post-card{ padding:12px 0; border-bottom:1px solid var(--line); }
+  .profile-card.vigil .church-event-card, .profile-card.vigil .church-post-card{ border-bottom-color:rgba(255,255,255,0.14); }
+  .church-event-card:last-child, .church-post-card:last-child{ border-bottom:none; }
+  .church-event-title{ font-weight:600; font-size:14px; }
+  .church-event-meta{ font-size:12.5px; color:var(--text-dim); margin-top:2px; }
+  .church-event-desc{ font-size:13px; color:var(--text-dim); margin-top:6px; white-space:pre-wrap; }
+  .church-post-head{ font-size:12.5px; color:var(--text-dim); margin-bottom:4px; }
+  .church-post-text{ font-size:13.5px; white-space:pre-wrap; }
+
   /* Tier page */
   .tier-inner{ max-width:920px; text-align:left; }
   .tier-inner .back-link{ color:#C7CCDA; }
@@ -3068,6 +3128,40 @@
   }
   .home-btn:hover{ border-color:var(--brass); }
   .home-btn img{ width:20px; height:20px; display:block; border-radius:4px; }
+  /* SR-1 quick-action row (Messages / Post / Profile) — left edge, anchored
+     near the top (like .admin-marker on the right, just below it in z-order)
+     rather than vertically centered on the viewport, so its position never
+     depends on page/content height and can't drift over whatever happens to
+     be scrolled to the middle of the screen. Shown only on the search page
+     (see setView()), which also adds body.qa-on to reserve this column's
+     width in .hero/.results-wrap so page content never sits under it. */
+  .sr1-quick-actions{
+    position:fixed; left:16px; top:60px; z-index:9997;
+    display:flex; flex-direction:column; gap:12px;
+  }
+  .sr1-qa-btn{
+    position:relative;
+    width:44px; height:44px; border-radius:50%; padding:0;
+    display:inline-flex; align-items:center; justify-content:center;
+    background:rgba(10,10,10,0.72); border:1px solid rgba(255,255,255,0.18);
+    cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,0.25);
+  }
+  .sr1-qa-btn:hover{ border-color:var(--brass); }
+  .sr1-qa-badge{
+    position:absolute; top:-3px; right:-3px; min-width:16px; height:16px;
+    padding:0 4px; border-radius:10px;
+    background:var(--brass); color:var(--ink);
+    font-family:'Inter',sans-serif; font-size:10px; font-weight:700;
+    display:flex; align-items:center; justify-content:center;
+  }
+  body.qa-on .hero{ padding-left:84px; }
+  body.qa-on .results-wrap{ padding-left:84px; }
+  @media (max-width:760px){
+    .sr1-quick-actions{ left:8px; gap:9px; }
+    .sr1-qa-btn{ width:38px; height:38px; }
+    body.qa-on .hero{ padding-left:60px; }
+    body.qa-on .results-wrap{ padding-left:60px; }
+  }
 
   @media (max-width:760px){
     .gate-choices{ grid-template-columns:1fr; }
@@ -3136,6 +3230,27 @@
 <!-- Always-visible home button (top right, left of the account pill).
      Routes to #landing unconditionally. -->
 <button class="home-btn" id="homeBtn" title="Go back to home page?"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAAYFBMVEXGsBAZJDVZWSqVm6FMVmPf4eARHjYQIEGsnRv03g11bGojJ007RlcfLEEvNy4THzMAAP8/QztfXz95gY0TIToJFzT8/Pz62gEAAAArN0qxpCspMzZudYPq6dhrc3zEyMlMassNAAAAIHRSTlP/of///v/g////CSj/njtAAUAI//7+/v8A/////////9kvG1cAAAE9SURBVHjaxZPJloQgDEWDIopD9UQAh9b//8tOZLKO1Yte9Vt4Ark8iBDwpGFSJgoxRWoaOAfe95Mp6XEsiBGfDPSq5FVtbW0y0Yp+AC/K8r2xpEYWE+FhyGl5cJaZoyADRAOca05/oakZqedICFBh+ZanI7oFEwXFPRk/Dwkg13w0xPANhlwPkGUeGKy6rjqDsIi2JID8jvh7ELRe4j4jzxOAkpanqhCc61KMZCIRcLM21XQCSx60jd1P4HvNc90FMGYe2wvABTDQqVBKvNoCVKSVtgAOquySAFzdk/Kx/gAsQNLO6YV1A+h1kM4qWqTgdoaXZb4A4F8AxYD5FVAg6Lrl+ftZN0DAY+bnNkfdgAc1Dj+uJK3zg0mNQ613IbTTVwduvXffC7kn8U1fmrc/u9v7N5FPibnplPjg3A+eG0yzp9Zy4AAAAABJRU5ErkJggg==" alt=""></button>
+
+<!-- SR-1 quick-action row (Messages / Post / Profile), left edge, visible
+     only while on the search page — see the SR-1 QUICK ACTIONS dev note.
+     Messages uses a dove (the Holy Spirit), kept as the app's consistent
+     messaging icon; Post uses an ichthys (Jesus fish), per explicit request. -->
+<div class="sr1-quick-actions" id="sr1QuickActions" style="display:none;">
+  <button class="sr1-qa-btn" id="sr1QaMessages" title="Messages">
+    <svg width="22" height="22" viewBox="0 0 64 64" fill="#F2F0E8">
+      <g id="sr1DoveIcon"></g>
+    </svg>
+    <span class="sr1-qa-badge" id="sr1QaBadge" hidden></span>
+  </button>
+  <button class="sr1-qa-btn" id="sr1QaPost" title="Post">
+    <svg width="24" height="15" viewBox="0 0 100 60" fill="none" stroke="#F2F0E8" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8,30 Q50,6 88,30 M8,30 Q50,54 88,30 M74,21 L98,12 M74,39 L98,48"/>
+    </svg>
+  </button>
+  <button class="sr1-qa-btn" id="sr1QaProfile" title="Profile">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="#F2F0E8"><circle cx="12" cy="8" r="4.3"/><path d="M4 21c0-4.4 3.6-7.2 8-7.2s8 2.8 8 7.2z"/></svg>
+  </button>
+</div>
 
 <!-- Admin-mode marker (top-left). Hidden by default; shown only after a
      successful #admin sign-in, toggled by applyAdminVisual(). See dev note
@@ -3477,6 +3592,26 @@
   <div class="gate-inner account-inner">
     <button class="back-link" id="adminAccountsBackBtn" style="padding-top:0;">&larr; Back to admin</button>
     <div id="adminAccountsBody"></div>
+  </div>
+</div>
+
+<!-- EV-1: Post page, reachable at #post via the fish quick-action button on
+     SR-1. A pastor of a claimed church can post an event or a general
+     update for their church; an attendee can post a recap of a past event
+     they attended. See dev note EVENTS & POSTS. Body rendered by
+     renderPost(); routeFromHash() requires sign-in first. -->
+<div class="gate-wrap" id="postWrap" style="display:none;">
+  <svg class="rose gate-rose" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+    <g stroke="#EDEAE0" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M-20,200 C-4,178 20,158 42,161 C64,164 80,180 95,200 Z" fill="#EDEAE0" fill-opacity="0.10" stroke="none"/>
+      <path d="M15,200 C35,168 65,140 100,138 C138,136 172,160 222,185 L222,200 Z" fill="#EDEAE0" fill-opacity="0.18" stroke-width="1.4"/>
+      <line x1="100" y1="80" x2="100" y2="138" stroke-width="2.2"/>
+      <line x1="80" y1="100" x2="120" y2="100" stroke-width="2.2"/>
+    </g>
+  </svg>
+  <div class="gate-inner account-inner">
+    <button class="back-link" id="postBackBtn" style="padding-top:0;">&larr; Back</button>
+    <div id="postBody"></div>
   </div>
 </div>
 
@@ -4372,6 +4507,7 @@ var resetWrap = document.getElementById('resetWrap');
 var accountWrap = document.getElementById('accountWrap');
 var adminWrap = document.getElementById('adminWrap');
 var adminAccountsWrap = document.getElementById('adminAccountsWrap');
+var postWrap = document.getElementById('postWrap');
 var heroSection = document.getElementById('heroSection');
 var pageIdFixed = document.getElementById('pageIdFixed');
 var detailMap = null;
@@ -4379,7 +4515,7 @@ var detailMap = null;
 // Updates the persistent bottom-left ID badge. 'detail' view is handled separately
 // in showDetail() (it needs the specific church id, e.g. FC-2 or R-4, not a static one).
 function updatePageIdBadge(view){
-  var ids = { welcome:'IC-1', landing:'LP-1', search:'SR-1', tiers:'TP-1', tiersLocked:'TP-1', donate:'DN-1', quiz:'QZ-1', pastor:'PI-1', chat:'CV-1', auth:'AU-1', verify:'VF-1', account:'AC-1', admin:'AD-1', adminAccounts:'AD-2', reset:'PR-1' };
+  var ids = { welcome:'IC-1', landing:'LP-1', search:'SR-1', tiers:'TP-1', tiersLocked:'TP-1', donate:'DN-1', quiz:'QZ-1', pastor:'PI-1', chat:'CV-1', auth:'AU-1', verify:'VF-1', account:'AC-1', admin:'AD-1', adminAccounts:'AD-2', reset:'PR-1', post:'EV-1' };
   if(ids[view]) pageIdFixed.textContent = ids[view];
 }
 
@@ -4399,6 +4535,10 @@ function setView(view){
   if(currentView === 'adminAccounts' && view !== 'adminAccounts'){
     adminAcctOpen = null; adminAcctNote = null;
   }
+  // Leaving EV-1 abandons whatever was mid-draft (mode choice, picked event,
+  // typed text) so a later visit starts clean rather than resuming a stale
+  // half-written post.
+  if(currentView === 'post' && view !== 'post'){ resetPostState(); }
   icWrap.style.display = view==='welcome' ? 'flex' : 'none';
   landingWrap.style.display = view==='landing' ? 'flex' : 'none';
   tierWrap.style.display = view==='tiers' ? 'flex' : 'none';
@@ -4413,6 +4553,7 @@ function setView(view){
   accountWrap.style.display = view==='account' ? 'flex' : 'none';
   adminWrap.style.display = view==='admin' ? 'flex' : 'none';
   adminAccountsWrap.style.display = view==='adminAccounts' ? 'flex' : 'none';
+  postWrap.style.display = view==='post' ? 'flex' : 'none';
   // Re-render on every entry, not once at startup — a thread can gain messages
   // mid-session, so a stale render would hide exactly what you came to check.
   if(view==='pastor'){ renderPastorList(); }
@@ -4425,6 +4566,7 @@ function setView(view){
   if(view==='account'){ renderAccount(); }
   if(view==='admin'){ renderAdmin(); }
   if(view==='adminAccounts'){ renderAdminAccounts(); }
+  if(view==='post'){ renderPost(); }
   // The pill is hidden on the auth screens themselves (you're already there) and
   // on IC-1 (the icebreaker should be the only thing on screen).
   renderAcctPill(view);
@@ -4436,6 +4578,13 @@ function setView(view){
     else { quizRenderQuestion(); }
   }
   heroSection.style.display = (view==='search' || view==='detail') ? 'block' : 'none';
+  // SR-1 quick actions (Messages/Post/Profile) — the search page specifically,
+  // not the detail page, per explicit request. body.qa-on reserves this
+  // column's width in .hero/.results-wrap (see their CSS) so page content
+  // never sits under the fixed buttons.
+  document.getElementById('sr1QuickActions').style.display = view==='search' ? 'flex' : 'none';
+  document.body.classList.toggle('qa-on', view==='search');
+  if(view==='search') refreshSr1QaBadge();
   // The hero is shared by SR-1 and the detail page; only SR-1 needs this back
   // link, since the detail page has its own "Back to results".
   var heroBack = document.getElementById('searchBackBtn');
@@ -4556,6 +4705,42 @@ function showDetail(id){
       '</div>';
   }
 
+  // EVENTS & POSTS — only shown when there's actually content, so the
+  // thousands of unclaimed/inactive directory listings don't carry a
+  // permanent empty section. See the EVENTS & POSTS dev note for the
+  // posting rules (pastor: event or update; attendee: recap of a past
+  // event only). Past events aren't listed here — still reachable through
+  // the recap picker on EV-1 — to keep this page from growing without end.
+  var churchUpcomingEvents = eventsForChurch(p.id).filter(function(e){ return !isEventPast(e); });
+  var churchPosts = postsForChurch(p.id);
+  var eventsBlock = churchUpcomingEvents.length
+    ? '<div class="church-section">'+
+        '<p class="church-section-title">Upcoming events</p>'+
+        churchUpcomingEvents.map(function(e){
+          return '<div class="church-event-card">'+
+            '<div class="church-event-title">'+escapeHtml(e.title)+'</div>'+
+            '<div class="church-event-meta">'+escapeHtml(fmtEventDate(e.date))+
+              (e.location ? ' · '+escapeHtml(e.location) : '')+'</div>'+
+            (e.description ? '<div class="church-event-desc">'+escapeHtml(e.description)+'</div>' : '')+
+          '</div>';
+        }).join('')+
+      '</div>'
+    : '';
+  var postsBlock = churchPosts.length
+    ? '<div class="church-section">'+
+        '<p class="church-section-title">Updates</p>'+
+        churchPosts.map(function(post){
+          var head = post.kind === 'recap'
+            ? escapeHtml(post.authorName)+' shared about an event'
+            : escapeHtml(post.authorName)+' (church leader)';
+          return '<div class="church-post-card">'+
+            '<div class="church-post-head">'+head+'</div>'+
+            '<div class="church-post-text">'+escapeHtml(post.text)+'</div>'+
+          '</div>';
+        }).join('')+
+      '</div>'
+    : '';
+
   detailWrap.innerHTML =
     '<button class="back-link" id="backBtn">&larr; Back to results</button>'+
     '<div class="profile-card'+(p.featured ? ' vigil' : '')+'"'+cardStyle+'>'+
@@ -4572,6 +4757,8 @@ function showDetail(id){
         '<div class="profile-grid">'+fields+'</div>'+
         '<div id="detailMap"></div>'+
         contactBlock+
+        eventsBlock+
+        postsBlock+
       '</div>'+
     '</div>';
 
@@ -4657,6 +4844,20 @@ function routeFromHash(){
   if(hash === 'verify'){
     // Nothing to verify without a pending address — don't render an orphan form.
     if(!pendingVerifyEmail){ location.hash = 'signin'; return; }
+    // Same redundant-render guard as signin/signup/account/admin-accounts —
+    // this one was missing, and it's a real bug, not just cosmetic: without
+    // it, routeFromHash() re-firing in the background (geocodeSeeds(), for
+    // ~1s after any page load) tears down and rebuilds VF-1's whole form —
+    // including mid-flight, right as a click on #vfSubmit/#vfChurchSubmit is
+    // being dispatched, so the click can land on a detached button and never
+    // fire submitVerifyEmail()/submitVerifyChurch() at all. Reproduced via
+    // Playwright: a fast automated signup (well within that ~1s window)
+    // left the account permanently stuck on #verify, never actually
+    // verified, silently falling back to whatever session a new tab
+    // inherits (see getSessionEmail()) instead of erroring — worth knowing
+    // even though a real human typing a 6-digit code rarely lands in that
+    // exact ~1s window.
+    if(currentView === 'verify') return;
     setView('verify'); return;
   }
   if(hash === 'forgot'){
@@ -4673,6 +4874,15 @@ function routeFromHash(){
     // would tear down AC-1's church-claim picker mid-typing.
     if(currentView === 'account') return;
     setView('account'); return;
+  }
+  // EV-1: posting an event/update (pastor) or an event recap (attendee) —
+  // see dev note EVENTS & POSTS. Same redundant-render guard as AC-1, since
+  // this page also carries a search picker (the attendee's past-event
+  // picker) that must survive a background re-render.
+  if(hash === 'post'){
+    if(!currentAccount()){ requireAuth('post'); return; }
+    if(currentView === 'post') return;
+    setView('post'); return;
   }
   // PI-1 is no longer wide open: it holds real people's messages, so it needs a
   // verified PASTOR account. A signed-in attendee is bounced to their own side
@@ -5608,7 +5818,7 @@ function openThread(threadId, role){
 //     delivery via EmailJS (see sendVerificationEmail(), just above
 //     issueVerificationCode()). No backend involved — EmailJS sends straight
 //     from the browser using a public key that's meant to be client-side.
-var STORE_KEYS = { accounts:'cf.accounts.v2', session:'cf.session.v2', lastSession:'cf.lastsession.v2', threads:'cf.threads.v2' };
+var STORE_KEYS = { accounts:'cf.accounts.v2', session:'cf.session.v2', lastSession:'cf.lastsession.v2', threads:'cf.threads.v2', events:'cf.events.v1', posts:'cf.posts.v1' };
 
 // TWO STORAGE SCOPES, and the split matters:
 //   localStorage   — accounts + threads. SHARED by every tab. This is the
@@ -6911,6 +7121,43 @@ function wireChurchPicker(rootEl, opts){
   if(selected) renderSelected(); else renderSearch();
 }
 
+// ---- EVENTS & POSTS ----
+// Per explicit request: the fish quick-action button on SR-1 leads to EV-1,
+// where a pastor of a CLAIMED church can post either an EVENT (something
+// with a date attendees can plan around) or a general update/promotional
+// post — "whatever they please." An attendee can only post once an event
+// they're recapping is actually over: a RECAP tied to that specific event,
+// shared after its date has passed ("the people that participated in the
+// event can post after the event date and time to share what happened").
+// There's no RSVP/check-in system to verify who actually attended, so —
+// same honesty-over-fake-verification pattern as the rest of this app
+// (e.g. church-affiliation verification, "no address on file") — this is
+// self-attested: any signed-in attendee can recap any PAST event, not just
+// ones they proved they went to. Both event and post live on the church's
+// own detail page (see showDetail()'s EVENTS & POSTS section); there's no
+// separate global feed yet.
+function loadEvents(){ return STORE.get(STORE_KEYS.events, []); }
+function saveEvents(list){ STORE.set(STORE_KEYS.events, list); }
+function loadPosts(){ return STORE.get(STORE_KEYS.posts, []); }
+function savePosts(list){ STORE.set(STORE_KEYS.posts, list); }
+
+function isEventPast(ev){ return !!ev && Date.parse(ev.date) < Date.now(); }
+function eventsForChurch(churchId){
+  return loadEvents().filter(function(e){ return e.churchId === churchId; })
+    .sort(function(a,b){ return Date.parse(a.date) - Date.parse(b.date); });
+}
+function postsForChurch(churchId){
+  return loadPosts().filter(function(p){ return p.churchId === churchId; })
+    .sort(function(a,b){ return b.createdAt - a.createdAt; });
+}
+// Only the pastor who actually claims this exact church may post an event
+// or update for it — mirrors the messaging-gate rule (isClaimableChurchId +
+// a real claiming account), not just "any pastor."
+function canPostForChurch(account, churchId){
+  return !!account && account.role === 'pastor' && account.churchId === churchId;
+}
+function findEvent(id){ return loadEvents().filter(function(e){ return e.id === id; })[0] || null; }
+
 // ---- AC-1 profile editing state ----
 // Module-level on purpose, same reasoning as the VF-1/PR-1 send-status
 // trackers: refreshThreadsFromStorage() re-renders AC-1 in the background
@@ -7236,6 +7483,243 @@ function renderAccount(){
   document.getElementById('acSignOut').addEventListener('click', function(){
     signOut();
     location.hash = 'landing';
+  });
+}
+
+// ---- EV-1: post an event / update (pastor) or a recap (attendee) ----
+// Module-level, same reasoning as authDraft/acChurchPick: EV-1 carries a
+// search picker (the attendee's past-event picker) and multi-field forms
+// that must survive a background re-render without losing what's typed.
+// Reset on leaving EV-1 — see setView()'s per-view cleanup block.
+var postMode = null;       // pastor only: null (choosing) | 'event' | 'update'
+var postDraft = {};        // field values carried across a postMode switch
+var postEventPick = null;  // attendee only: the past event being recapped
+var postNote = null;       // one-time success/error message after a submit
+var postNoteClass = '';
+function resetPostState(){
+  postMode = null; postDraft = {}; postEventPick = null; postNote = null; postNoteClass = '';
+}
+function capturePostDraft(){
+  ['evTitle','evDate','evLocation','evDesc','updText','rcText'].forEach(function(id){
+    var el = document.getElementById(id);
+    if(el) postDraft[id] = el.value;
+  });
+}
+function postDraftVal(id){ return postDraft[id] !== undefined ? postDraft[id] : ''; }
+function fmtEventDate(iso){
+  var d = new Date(iso);
+  if(isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, { weekday:'short', year:'numeric', month:'short', day:'numeric', hour:'numeric', minute:'2-digit' });
+}
+
+// Past-event search picker for the attendee recap flow — same imperative,
+// keystroke-safe shape as wireChurchPicker() (see its dev note for why).
+function wireEventPicker(rootEl, opts){
+  opts = opts || {};
+  var selected = opts.initial || null;
+  var query = '';
+
+  function renderSelected(){
+    rootEl.innerHTML =
+      '<div class="church-picker-selected">'+
+        '<div class="church-picker-selected-main">'+
+          '<div class="church-picker-selected-name">'+escapeHtml(selected.title)+'</div>'+
+          '<div class="church-picker-selected-addr">'+escapeHtml(selected.churchName)+' · '+escapeHtml(fmtEventDate(selected.date))+'</div>'+
+        '</div>'+
+        '<button type="button" class="church-picker-change">Change</button>'+
+      '</div>';
+    rootEl.querySelector('.church-picker-change').addEventListener('click', function(){
+      selected = null; query = ''; renderSearch();
+    });
+  }
+  function renderResultsList(container){
+    var q = query.trim().toLowerCase();
+    if(!q){ container.innerHTML = ''; return; }
+    var results = loadEvents().filter(isEventPast).filter(function(e){
+      return (e.title && e.title.toLowerCase().indexOf(q) !== -1) ||
+             (e.churchName && e.churchName.toLowerCase().indexOf(q) !== -1);
+    }).slice(0, 8);
+    if(!results.length){
+      container.innerHTML = '<div class="church-picker-empty">No past events match “'+escapeHtml(query)+'”.</div>';
+      return;
+    }
+    container.innerHTML = results.map(function(e){
+      return '<div class="church-picker-row" data-id="'+escapeHtml(e.id)+'">'+
+        '<div class="church-picker-row-name">'+escapeHtml(e.title)+'</div>'+
+        '<div class="church-picker-row-addr">'+escapeHtml(e.churchName)+' · '+escapeHtml(fmtEventDate(e.date))+'</div>'+
+      '</div>';
+    }).join('');
+    container.querySelectorAll('.church-picker-row').forEach(function(row){
+      row.addEventListener('mousedown', function(ev){
+        ev.preventDefault();
+        var e = findEvent(row.getAttribute('data-id'));
+        if(!e) return;
+        selected = e;
+        if(opts.onChange) opts.onChange(e);
+        renderSelected();
+      });
+    });
+  }
+  function renderSearch(){
+    rootEl.innerHTML =
+      '<input type="text" class="church-picker-input" placeholder="Search past events by title or church…" autocomplete="off">'+
+      '<div class="church-picker-results"></div>';
+    var input = rootEl.querySelector('.church-picker-input');
+    var results = rootEl.querySelector('.church-picker-results');
+    input.value = query;
+    renderResultsList(results);
+    input.addEventListener('input', function(){ query = input.value; renderResultsList(results); });
+  }
+  if(selected) renderSelected(); else renderSearch();
+}
+
+function renderPost(){
+  var body = document.getElementById('postBody');
+  var account = currentAccount();
+  if(!account){ requireAuth('post'); return; }
+  var isPastor = account.role === 'pastor';
+
+  if(isPastor && !account.churchId){
+    body.innerHTML =
+      '<p class="eyebrow">Post</p>'+
+      '<h1 class="gate-title" style="max-width:none;">Claim your church first</h1>'+
+      '<p class="gate-sub">Events and updates are posted on behalf of a specific church listing — link yours from your account page, then come back here.</p>'+
+      '<button class="account-btn primary" id="evGoAccount">Go to your account</button>';
+    document.getElementById('evGoAccount').addEventListener('click', function(){ location.hash = 'account'; });
+    return;
+  }
+
+  if(isPastor){
+    if(!postMode){
+      body.innerHTML =
+        '<p class="eyebrow">Post</p>'+
+        '<h1 class="gate-title" style="max-width:none;">What would you like to post for '+escapeHtml(account.churchName||'your church')+'?</h1>'+
+        '<div class="auth-roles">'+
+          '<button class="auth-role" id="evPickEvent">'+
+            '<span class="auth-role-title">An event</span>'+
+            '<span class="auth-role-sub">Has a date — attendees can plan around it</span>'+
+          '</button>'+
+          '<button class="auth-role" id="evPickUpdate">'+
+            '<span class="auth-role-title">An update</span>'+
+            '<span class="auth-role-sub">A promotional or general post</span>'+
+          '</button>'+
+        '</div>';
+      document.getElementById('evPickEvent').addEventListener('click', function(){ postMode = 'event'; renderPost(); });
+      document.getElementById('evPickUpdate').addEventListener('click', function(){ postMode = 'update'; renderPost(); });
+      return;
+    }
+
+    if(postMode === 'event'){
+      body.innerHTML =
+        '<p class="eyebrow">Post</p>'+
+        '<h1 class="gate-title" style="max-width:none;">Post an event</h1>'+
+        '<p class="gate-sub">For '+escapeHtml(account.churchName||'your church')+'.</p>'+
+        (postNote ? '<p class="auth-note '+postNoteClass+'">'+escapeHtml(postNote)+'</p>' : '')+
+        '<div class="auth-field"><label for="evTitle">Title</label>'+
+          '<input type="text" id="evTitle" maxlength="80" placeholder="e.g. Fall Community Cookout" value="'+escapeHtml(postDraftVal('evTitle'))+'"></div>'+
+        '<div class="auth-field"><label for="evDate">Date &amp; time</label>'+
+          '<input type="datetime-local" id="evDate" value="'+escapeHtml(postDraftVal('evDate'))+'"></div>'+
+        '<div class="auth-field"><label for="evLocation">Location</label>'+
+          '<input type="text" id="evLocation" maxlength="120" placeholder="e.g. Main sanctuary, or an address" value="'+escapeHtml(postDraftVal('evLocation'))+'"></div>'+
+        '<div class="auth-field"><label for="evDesc">Description</label>'+
+          '<textarea id="evDesc" maxlength="1000" rows="4" placeholder="What should people know?">'+escapeHtml(postDraftVal('evDesc'))+'</textarea></div>'+
+        '<button class="account-btn primary" id="evSubmit">Post event</button>'+
+        '<button class="account-btn" id="evCancel" style="margin-left:8px;">Back</button>';
+      document.getElementById('evCancel').addEventListener('click', function(){ postMode = null; postNote = null; renderPost(); });
+      document.getElementById('evSubmit').addEventListener('click', function(){
+        var title = document.getElementById('evTitle').value.trim();
+        var date = document.getElementById('evDate').value;
+        var location = document.getElementById('evLocation').value.trim();
+        var desc = document.getElementById('evDesc').value.trim();
+        if(!title){ postNote = 'Give the event a title.'; postNoteClass = 'error'; capturePostDraft(); renderPost(); return; }
+        if(!date){ postNote = 'Pick a date and time.'; postNoteClass = 'error'; capturePostDraft(); renderPost(); return; }
+        var list = loadEvents();
+        list.push({
+          id: 'EVT-'+Date.now(), churchId: account.churchId, churchName: account.churchName,
+          title: title, date: date, location: location, description: desc,
+          createdBy: account.email, createdAt: Date.now()
+        });
+        saveEvents(list);
+        // Stay on the event form (cleared) rather than resetting postMode —
+        // resetting straight back to the choice screen skipped the success
+        // note entirely, since it's only rendered within the event/update
+        // form views below.
+        postDraft = {};
+        postNote = 'Posted. Attendees will see it on your church’s page.'; postNoteClass = 'success';
+        renderPost();
+      });
+      return;
+    }
+
+    // postMode === 'update'
+    body.innerHTML =
+      '<p class="eyebrow">Post</p>'+
+      '<h1 class="gate-title" style="max-width:none;">Share an update</h1>'+
+      '<p class="gate-sub">For '+escapeHtml(account.churchName||'your church')+'.</p>'+
+      (postNote ? '<p class="auth-note '+postNoteClass+'">'+escapeHtml(postNote)+'</p>' : '')+
+      '<div class="auth-field"><label for="updText">What’s the update?</label>'+
+        '<textarea id="updText" maxlength="1000" rows="5" placeholder="Share news, a promotion, anything you’d like your community to see.">'+escapeHtml(postDraftVal('updText'))+'</textarea></div>'+
+      '<button class="account-btn primary" id="updSubmit">Post update</button>'+
+      '<button class="account-btn" id="updCancel" style="margin-left:8px;">Back</button>';
+    document.getElementById('updCancel').addEventListener('click', function(){ postMode = null; postNote = null; renderPost(); });
+    document.getElementById('updSubmit').addEventListener('click', function(){
+      var text = document.getElementById('updText').value.trim();
+      if(!text){ postNote = 'Write something first.'; postNoteClass = 'error'; capturePostDraft(); renderPost(); return; }
+      var list = loadPosts();
+      list.push({
+        id: 'PST-'+Date.now(), churchId: account.churchId, churchName: account.churchName,
+        authorEmail: account.email, authorName: account.name, role: 'pastor', kind: 'promo',
+        eventId: null, text: text, createdAt: Date.now()
+      });
+      savePosts(list);
+      postDraft = {}; // same reasoning as the event form above — keep postMode
+      postNote = 'Posted. It’ll show up on your church’s page.'; postNoteClass = 'success';
+      renderPost();
+    });
+    return;
+  }
+
+  // Attendee: recap a past event, self-attested (see EVENTS & POSTS dev note).
+  var anyPastEvents = loadEvents().some(isEventPast);
+  if(!anyPastEvents){
+    body.innerHTML =
+      '<p class="eyebrow">Post</p>'+
+      '<h1 class="gate-title" style="max-width:none;">Nothing to recap yet</h1>'+
+      '<p class="gate-sub">Once a church posts an event and its date has passed, you’ll be able to share what happened here.</p>';
+    return;
+  }
+  body.innerHTML =
+    '<p class="eyebrow">Post</p>'+
+    '<h1 class="gate-title" style="max-width:none;">Share about an event you attended</h1>'+
+    '<p class="gate-sub">Pick a past event, then tell people what it was like.</p>'+
+    (postNote ? '<p class="auth-note '+postNoteClass+'">'+escapeHtml(postNote)+'</p>' : '')+
+    '<div class="auth-field"><label>Event</label><div id="evRecapPicker"></div></div>'+
+    (postEventPick
+      ? '<div class="auth-field"><label for="rcText">What happened?</label>'+
+          '<textarea id="rcText" maxlength="1000" rows="5" placeholder="Share your experience…">'+escapeHtml(postDraftVal('rcText'))+'</textarea></div>'+
+        '<button class="account-btn primary" id="rcSubmit">Post recap</button>'
+      : '');
+
+  var pickerEl = document.getElementById('evRecapPicker');
+  wireEventPicker(pickerEl, {
+    initial: postEventPick,
+    onChange: function(e){ postEventPick = e; renderPost(); }
+  });
+
+  var rcSubmit = document.getElementById('rcSubmit');
+  if(rcSubmit) rcSubmit.addEventListener('click', function(){
+    var text = document.getElementById('rcText').value.trim();
+    if(!text){ postNote = 'Write something first.'; postNoteClass = 'error'; capturePostDraft(); renderPost(); return; }
+    var list = loadPosts();
+    list.push({
+      id: 'PST-'+Date.now(), churchId: postEventPick.churchId, churchName: postEventPick.churchName,
+      authorEmail: account.email, authorName: account.name, role: 'attendee', kind: 'recap',
+      eventId: postEventPick.id, text: text, createdAt: Date.now()
+    });
+    savePosts(list);
+    postDraft = {}; postEventPick = null;
+    postNote = 'Posted. Thanks for sharing!'; postNoteClass = 'success';
+    renderPost();
   });
 }
 
@@ -7615,6 +8099,70 @@ document.getElementById('acctPill').addEventListener('click', function(){
 document.getElementById('homeBtn').addEventListener('click', function(){
   location.hash = 'landing';
 });
+
+// ---- SR-1 QUICK ACTIONS (Messages / Post / Profile) ----
+// Per explicit request: quick actions on the search page for messaging,
+// posting, and the signed-in account, with messaging themed as a dove (the
+// Holy Spirit) throughout the app — this is the canonical place that
+// theme lives; reuse buildDoveIcon() rather than duplicating the shape.
+// Built once, imperatively (ellipses, not a hand-drawn path — safer to get
+// right and still reads clearly at button size), not re-rendered per view.
+function buildDoveIcon(g){
+  function el(cx, cy, rx, ry, rot){
+    var e = document.createElementNS('http://www.w3.org/2000/svg','ellipse');
+    e.setAttribute('cx', cx); e.setAttribute('cy', cy);
+    e.setAttribute('rx', rx); e.setAttribute('ry', ry);
+    if(rot) e.setAttribute('transform', 'rotate('+rot+' '+cx+' '+cy+')');
+    return e;
+  }
+  function poly(pts){
+    var p = document.createElementNS('http://www.w3.org/2000/svg','polygon');
+    p.setAttribute('points', pts);
+    return p;
+  }
+  // Flight direction: head/beak to the right, wings swept up-left, tail
+  // fanned down-left, small flame cluster above the head.
+  [
+    // Tail (feather fan)
+    el(15,43,7,2.2,12), el(13,39,6.5,1.9,-6), el(14,47,6.5,1.9,30),
+    // Wings (fan from shoulder, largest/innermost first)
+    el(20,26,15,5,-35), el(16,20,13,4,-52), el(14,14,11,3.2,-68), el(13,9,8,2.6,-82),
+    // Body
+    el(32,38,15,7.5,-8),
+    // Head
+    el(45,31,6.5,6,0),
+    // Flame (tighter cluster of 3 flickers above the head)
+    el(45,16,2.6,6,3), el(41.5,15,1.8,4.3,-14), el(48.5,15,1.8,4.3,16)
+  ].forEach(function(shape){ g.appendChild(shape); });
+  g.appendChild(poly('50,29 58,31 50,34')); // beak
+}
+buildDoveIcon(document.getElementById('sr1DoveIcon'));
+
+function refreshSr1QaBadge(){
+  var badge = document.getElementById('sr1QaBadge');
+  if(!badge) return;
+  var acct = currentAccount();
+  if(!acct){ badge.hidden = true; return; }
+  var isPastor = acct.role === 'pastor';
+  var myThreads = THREADS.filter(function(t){
+    return isPastor ? threadBelongsToPastor(t, acct) : t.owner === acct.email;
+  });
+  var unread = myThreads.reduce(function(n,t){
+    return n + ((isPastor ? t.unreadPastor : t.unreadVisitor) ? 1 : 0);
+  }, 0);
+  badge.textContent = unread;
+  badge.hidden = !unread;
+}
+document.getElementById('sr1QaMessages').addEventListener('click', function(){
+  var acct = currentAccount();
+  if(!acct){ requireAuth('pastor'); return; }
+  if(acct.role === 'pastor'){ location.hash = 'pastor'; return; }
+  var myThreads = THREADS.filter(function(t){ return t.owner === acct.email; });
+  if(myThreads.length){ openThread(myThreads[0].id, 'visitor'); return; }
+  location.hash = 'account';
+});
+document.getElementById('sr1QaPost').addEventListener('click', function(){ location.hash = 'post'; });
+document.getElementById('sr1QaProfile').addEventListener('click', function(){ location.hash = 'account'; });
 document.getElementById('authBackBtn').addEventListener('click', function(){
   // Abandoning sign-in drops the pending destination too, otherwise a later
   // unrelated sign-in would fling them somewhere they've forgotten about.
@@ -7631,6 +8179,7 @@ document.getElementById('searchBackBtn').addEventListener('click', function(){ l
 document.getElementById('accountBackBtn').addEventListener('click', function(){ location.hash = 'landing'; });
 document.getElementById('adminBackBtn').addEventListener('click', function(){ location.hash = 'landing'; });
 document.getElementById('adminAccountsBackBtn').addEventListener('click', function(){ location.hash = 'admin'; });
+document.getElementById('postBackBtn').addEventListener('click', function(){ location.hash = 'landing'; });
 document.getElementById('adminMarker').addEventListener('click', function(){ location.hash = 'admin'; });
 
 // ---- thread ownership + persistence ----
@@ -7678,6 +8227,7 @@ function refreshThreadsFromStorage(){
   if(currentView === 'chat') renderChat();
   else if(currentView === 'pastor') renderPastorList();
   else if(currentView === 'account') renderAccount();
+  if(currentView === 'search') refreshSr1QaBadge();
 }
 window.addEventListener('storage', function(e){
   if(!e.key || e.key === STORE_KEYS.threads) refreshThreadsFromStorage();
