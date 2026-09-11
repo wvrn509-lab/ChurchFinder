@@ -756,6 +756,19 @@
   implying reach it doesn't have. Keep that note if you restyle the page.
 
   ===== CHANGE LOG (most recent first) =====
+  - MADE LP-1's "CHURCH LEADER" BUTTON PASTOR-ONLY, per explicit request
+    ("the church leader button should only appear for church leaders"). It
+    was showing to every anonymous visitor as a third gate choice alongside
+    Member/Attendee, which is misleading — becoming a leader means already
+    having (or signing up for) a pastor account on AU-1, it isn't a role
+    you just declare here the way Member/Attendee are. Now hidden by
+    default (id="btnLeader" starts display:none in the markup) and only
+    shown when setView('landing') finds a signed-in account with
+    role==='pastor'. A brand-new pastor still signs up the normal way
+    (AU-1's "Create one" -> Pastor/leader role, independent of this
+    button) and picks up the Church Leader door on their next visit to
+    LP-1, or immediately via their account page / the pencil on their
+    church's own page.
   - ADDED AN ALWAYS-VISIBLE SEARCH BUTTON (magnifying glass, tooltip
     "Search") in the top-right cluster, between the account pill and the
     home button, per explicit request with the position marked on a
@@ -3466,7 +3479,7 @@
         <span class="gate-btn-title">Church Attendee</span>
         <span class="gate-btn-sub">Find a church near you</span>
       </button>
-      <button class="gate-btn" id="btnLeader">
+      <button class="gate-btn" id="btnLeader" style="display:none;">
         <span class="gate-btn-title">Church Leader</span>
         <span class="gate-btn-sub">Manage your church&rsquo;s page</span>
       </button>
@@ -4723,6 +4736,17 @@ function setView(view){
   if(currentView === 'editChurch' && view !== 'editChurch'){ resetChurchEditState(); }
   icWrap.style.display = view==='welcome' ? 'flex' : 'none';
   landingWrap.style.display = view==='landing' ? 'flex' : 'none';
+  // LP-1's "Church Leader" door isn't a role CHOICE the way Member/Attendee
+  // are — becoming a leader means already having (or signing up for) a
+  // pastor account, which happens on AU-1, not here. So unlike the other two
+  // gate buttons, this one only appears once we already know the visitor IS
+  // one: signed in with role 'pastor'. Per explicit request — it was
+  // showing to every anonymous visitor, which read as a third equal choice.
+  if(view==='landing'){
+    var leaderAcct = currentAccount();
+    document.getElementById('btnLeader').style.display =
+      (leaderAcct && leaderAcct.role === 'pastor') ? '' : 'none';
+  }
   tierWrap.style.display = view==='tiers' ? 'flex' : 'none';
   tierLockedWrap.style.display = view==='tiersLocked' ? 'flex' : 'none';
   donateWrap.style.display = view==='donate' ? 'flex' : 'none';
