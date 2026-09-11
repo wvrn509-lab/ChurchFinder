@@ -756,6 +756,17 @@
   implying reach it doesn't have. Keep that note if you restyle the page.
 
   ===== CHANGE LOG (most recent first) =====
+  - ADDED AN ALWAYS-VISIBLE SEARCH BUTTON (magnifying glass, tooltip
+    "Search") in the top-right cluster, between the account pill and the
+    home button, per explicit request with the position marked on a
+    screenshot. Goes to SR-1 (#attendee) from anywhere, including the
+    pages where the account pill itself is hidden. The top-right cluster
+    is now a right-offset CHAIN — home 16px, search 66px, account pill
+    116px — so adding another button there means shifting everything to
+    its left; a narrow-screen media query tightens the spacing and lets a
+    long display name truncate rather than push the buttons off-screen.
+    Note the id is navSearchBtn, NOT searchBtn — that one is already the
+    Search button inside SR-1's own search card.
   - ADDED CHURCH PAGE EDITING (EP-1, reachable at #edit-church-<id>), per
     explicit request, with the field list approved up front. A claiming
     pastor can set a banner photo, a round church logo, a page colour, a
@@ -3224,7 +3235,7 @@
   /* Persistent top-right account pill — the way in and out of an account from
      anywhere. Mirrors .page-id-fixed but is clickable. */
   .acct-pill{
-    position:fixed; top:14px; right:66px; z-index:9998;
+    position:fixed; top:14px; right:116px; z-index:9998;
     display:inline-flex; align-items:center; gap:8px;
     height:34px; padding:0 14px; border-radius:20px; cursor:pointer;
     background:rgba(10,10,10,0.72); border:1px solid rgba(255,255,255,0.18);
@@ -3246,6 +3257,23 @@
   }
   .home-btn:hover{ border-color:var(--brass); }
   .home-btn img{ width:20px; height:20px; display:block; border-radius:4px; }
+  /* Always-visible search button, sitting between the account pill and the
+     home button (see the right-offset chain: home 16px, search 66px, pill
+     116px — if you add another button here, shift the ones to its left). */
+  .search-btn{
+    position:fixed; top:14px; right:66px; z-index:9999;
+    width:34px; height:34px; border-radius:50%; padding:0;
+    display:inline-flex; align-items:center; justify-content:center;
+    background:rgba(10,10,10,0.72); border:1px solid rgba(255,255,255,0.18);
+    cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,0.25);
+  }
+  .search-btn:hover{ border-color:var(--brass); }
+  /* The three top-right buttons plus a long display name can crowd a phone;
+     the pill already truncates, so just tighten the spacing here. */
+  @media (max-width:520px){
+    .acct-pill{ right:104px; max-width:calc(100vw - 120px); overflow:hidden; white-space:nowrap; }
+    .search-btn{ right:60px; }
+  }
   /* SR-1 quick-action row (Messages / Post / Profile) — left edge, anchored
      near the top (like .admin-marker on the right, just below it in z-order)
      rather than vertically centered on the viewport, so its position never
@@ -3347,6 +3375,14 @@
 
 <!-- Always-visible home button (top right, left of the account pill).
      Routes to #landing unconditionally. -->
+<!-- Always-visible search button (top right, between the account pill and
+     the home button). Goes to SR-1 from anywhere. -->
+<button class="search-btn" id="navSearchBtn" title="Search" aria-label="Search">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#F2F0E8" stroke-width="2.2" stroke-linecap="round">
+    <circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/>
+  </svg>
+</button>
+
 <button class="home-btn" id="homeBtn" title="Go back to home page?"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAAYFBMVEXGsBAZJDVZWSqVm6FMVmPf4eARHjYQIEGsnRv03g11bGojJ007RlcfLEEvNy4THzMAAP8/QztfXz95gY0TIToJFzT8/Pz62gEAAAArN0qxpCspMzZudYPq6dhrc3zEyMlMassNAAAAIHRSTlP/of///v/g////CSj/njtAAUAI//7+/v8A/////////9kvG1cAAAE9SURBVHjaxZPJloQgDEWDIopD9UQAh9b//8tOZLKO1Yte9Vt4Ark8iBDwpGFSJgoxRWoaOAfe95Mp6XEsiBGfDPSq5FVtbW0y0Yp+AC/K8r2xpEYWE+FhyGl5cJaZoyADRAOca05/oakZqedICFBh+ZanI7oFEwXFPRk/Dwkg13w0xPANhlwPkGUeGKy6rjqDsIi2JID8jvh7ELRe4j4jzxOAkpanqhCc61KMZCIRcLM21XQCSx60jd1P4HvNc90FMGYe2wvABTDQqVBKvNoCVKSVtgAOquySAFzdk/Kx/gAsQNLO6YV1A+h1kM4qWqTgdoaXZb4A4F8AxYD5FVAg6Lrl+ftZN0DAY+bnNkfdgAc1Dj+uJK3zg0mNQ613IbTTVwduvXffC7kn8U1fmrc/u9v7N5FPibnplPjg3A+eG0yzp9Zy4AAAAABJRU5ErkJggg==" alt=""></button>
 
 <!-- SR-1 quick-action row (Messages / Post / Profile), left edge, visible
@@ -8737,6 +8773,13 @@ document.getElementById('acctPill').addEventListener('click', function(){
 });
 document.getElementById('homeBtn').addEventListener('click', function(){
   location.hash = 'landing';
+});
+document.getElementById('navSearchBtn').addEventListener('click', function(){
+  // SR-1 lives at #attendee. Setting the same hash fires no hashchange, so
+  // route directly when we're already there (harmless no-op in practice,
+  // but keeps the button from feeling dead if it's ever clicked on SR-1).
+  if(location.hash === '#attendee') routeFromHash();
+  else location.hash = 'attendee';
 });
 
 // ---- SR-1 QUICK ACTIONS (Messages / Post / Profile) ----
