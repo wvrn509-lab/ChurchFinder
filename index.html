@@ -756,6 +756,19 @@
   implying reach it doesn't have. Keep that note if you restyle the page.
 
   ===== CHANGE LOG (most recent first) =====
+  - GATED THE DETAIL-PAGE "MESSAGE" FLOW on there being an actual claiming
+    pastor account, per explicit request ("as an attendee you should only
+    be able to message the churches if the churches have an active
+    account"). Previously any claimable church (FC-n/LC-n) showed the
+    Message button even with nobody signed up to receive it. showDetail()
+    now computes pastorAccountForP once and branches: a claimed church
+    shows the normal Message/Open-conversation flow (unchanged); anything
+    else — unclaimed, or a live-only search result that can never be
+    claimed — shows "This church isn't currently active, send them an
+    email here" with a mailto: link when the listing has an email on
+    file, or an honest "no contact email on file yet" note when it
+    doesn't. New .cp-btn-secondary CSS (outline style) for the mailto
+    fallback, visually distinct from the filled .cp-btn primary CTA.
   - BACKFILLED MISSING ADDRESSES across the embedded LOCAL_CHURCHES
     directory, per explicit request ("could you get better results with a
     better map api?" -> user opted for a free reverse-geocode backfill
@@ -2343,6 +2356,25 @@
     transition:background 0.12s ease, transform 0.12s ease;
   }
   .cp-btn:hover{ background:var(--brass-dark); border-color:var(--brass-dark); color:#fff; transform:translateY(-1px); }
+  /* Inactive-church fallback (no claiming pastor account yet — see the
+     CHURCH CLAIMING dev note) — an outline style, distinct from the filled
+     .cp-btn "Message" CTA, so it reads as the secondary/fallback path. */
+  .cp-btn-secondary{
+    display:inline-block;
+    height:44px;
+    line-height:42px;
+    padding:0 22px;
+    border:1px solid var(--brass);
+    background:transparent;
+    color:var(--brass);
+    border-radius:9px;
+    font-family:'Inter',sans-serif;
+    font-weight:600;
+    font-size:14px;
+    text-decoration:none;
+    box-sizing:border-box;
+  }
+  .cp-btn-secondary:hover{ background:rgba(201,162,39,0.1); }
   .cp-unread{
     display:inline-block; margin-left:10px;
     background:var(--brass); color:var(--ink);
@@ -4480,12 +4512,21 @@ function showDetail(id){
   // church is messageable regardless of which 4 churches have curated data.
   // It's a link into CV-1, and it surfaces an unread count so a reply
   // waiting for you is visible from the profile.
+  // A claimable church only gets the real in-app "Message" flow once an
+  // actual pastor account claims it — see pastorAccountFor()/CHURCH CLAIMING
+  // dev note. Anyone can browse the directory before that happens, so every
+  // church detail page shows SOMETHING here, not just the ones that happen
+  // to be claimed: an unclaimed listing (or a live-only search result, which
+  // can never be claimed — see isClaimableChurchId) falls back to a plain
+  // mailto link using whatever email is on file, per explicit request
+  // ("if they don't [have an active account] then you see... 'This Church
+  // isn't currently active, send them an email here.'").
+  var pastorAccountForP = isClaimableChurchId(p.id) ? loadAccounts().filter(function(a){
+    return a.role === 'pastor' && a.churchId === p.id;
+  })[0] : null;
   var contactBlock = '';
-  if(isClaimableChurchId(p.id)){
-    var pastorAccountForP = loadAccounts().filter(function(a){
-      return a.role === 'pastor' && a.churchId === p.id;
-    })[0];
-    var pastorPlainName = pastorAccountForP ? pastorAccountForP.name : (p.pastor || '');
+  if(pastorAccountForP){
+    var pastorPlainName = pastorAccountForP.name || (p.pastor || '');
     var pastorSuffix = pastorPlainName ? ' Pastor '+escapeHtml(pastorPlainName) : ' this church';
     var acct = currentAccount();
     var myT = THREADS.filter(function(t){
@@ -4503,6 +4544,15 @@ function showDetail(id){
           (hasThread ? 'Open your conversation' : 'Message'+pastorSuffix)+
         '</button>'+
         (waiting ? '<span class="cp-unread">'+waiting+' new</span>' : '')+
+      '</div>';
+  } else {
+    contactBlock =
+      '<div class="cp-block" id="cpBlock">'+
+        '<p class="cp-lead">'+(p.email
+          ? 'This church isn’t currently active, send them an email here.'
+          : 'This church isn’t currently active, and no contact email is on file for them yet.')+
+        '</p>'+
+        (p.email ? '<a class="cp-btn-secondary" href="mailto:'+escapeHtml(p.email)+'">Send an email</a>' : '')+
       '</div>';
   }
 
@@ -4527,7 +4577,7 @@ function showDetail(id){
 
   currentDetailId = id;
   document.getElementById('backBtn').addEventListener('click', function(){ location.hash='attendee'; });
-  if(isClaimableChurchId(p.id)) wirePastorContact(p);
+  if(pastorAccountForP) wirePastorContact(p);
 
   if(detailMap){ detailMap.remove(); detailMap = null; }
   detailMap = L.map('detailMap', {scrollWheelZoom:false}).setView([p.lat,p.lon], 15);
