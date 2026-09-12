@@ -767,6 +767,50 @@
   implying reach it doesn't have. Keep that note if you restyle the page.
 
   ===== CHANGE LOG (most recent first) =====
+  - PHASE 4 STEP 2 (of the migration blueprint): real, server-enforced
+    church page editing. Before this, EP-1's save (ecSave) only wrote to
+    localStorage — the client-side canEditChurch() check was the only
+    thing stopping a tampered client from saving edits to a church it
+    doesn't own, and an edit made on one browser was invisible to everyone
+    else, defeating the entire point of a shared backend. Now:
+    - The save (ecSave's click handler, now async) writes to the database
+      FIRST, to a new church_profile_overlays table (see
+      supabase/05_phase4_church_profile_overlays.sql) whose RLS checks the
+      REAL ownership column (churches.claimed_by, set only by Phase 4 step
+      1's trigger) — never anything the client asserts. A rejected write
+      fails CLOSED: no local save either, and a real "our records don't
+      show you as this church's verified leader" message instead of a
+      false "Saved."
+    - A new syncChurchProfileOverlaysFromDB(), called once at boot before
+      the first routeFromHash(), pulls every real overlay row into the
+      same local churchProfiles cache showDetail()/applyChurchProfile()
+      already read — so those stay fully synchronous and UNCHANGED, but
+      now reflect the real shared database instead of only this browser's
+      own edits. This is what actually makes an edit visible on a second
+      device, not just protected from a first one.
+    FIXED A REAL BUG THIS WORK SURFACED before it shipped, not after: only
+    FC-1 among the 4 curated seed churches has an email on file, so the
+    church-affiliation CODE stage (where the original version of this
+    step's claim-writing lived) never runs for the other ~99% of the
+    directory — isPastorFullyVerified()/verifyStageFor() already treat a
+    no-email church as trivially verified, by design (see that dev note).
+    Writing the real church_claims row only inside
+    checkChurchVerificationCode() would have meant every pastor of a
+    no-email church ended up with NO claim row at all, and their own
+    EP-1 save would then be rejected as coming from a non-owner — a
+    regression that would have shipped invisibly, since every test written
+    so far happened to use a seed with an email. Fixed by extracting the
+    claim-writing into a shared writeRealChurchClaim(), called from BOTH
+    checkChurchVerificationCode() (the real-code path) and
+    submitVerifyEmail() (the trivial-verification path, for the ~99%
+    case) — same real claim, same real uniqueness enforcement, either way.
+    Regression: 5 new checks in /tmp/test_church_overlay_db.js (a save
+    from an account whose LOCAL churchId/churchVerified claims a church it
+    never really verified against is rejected and does not save even
+    locally; a real owner's save reaches the database; a second, unrelated
+    browser sharing the same backend picks up that edit purely from the
+    database sync, having never made the edit itself). All 131
+    previously-existing checks re-verified passing (136 total).
   - PHASE 4 STEP 1 (of the migration blueprint): real, server-enforced
     church claiming. Before this, "who owns this church's edit rights"
     lived only in each account's local churchId/churchVerified fields —
@@ -6685,37 +6729,45 @@ function describeChurchClaimError(err){
   }
   return 'Something went wrong confirming your church. Check your connection and try again.';
 }
+// PHASE 4: REAL CHURCH CLAIMS. Shared by both routes that end in a pastor
+// becoming a church's verified owner: a real code check
+// (checkChurchVerificationCode(), below) and the trivial-verification path
+// for a church with no email on file to check a code against
+// (isPastorFullyVerified()/verifyStageFor() — most of the directory, see
+// their dev notes; submitVerifyEmail() calls this directly for that case).
+// Either way, the claim itself, once asserted, is a real database row:
+// church_claims has a partial unique index
+// (church_claims_one_verified_per_church, from Phase 2) allowing only one
+// verified claim per church, so a second pastor who also ends up here for
+// the same church (a stale code, a shared inbox, a client-side attempt to
+// bypass the check, or simply two pastors both claiming the same
+// no-email church) gets a real constraint violation instead of silently
+// overwriting someone else's claim in a local-only account list.
+// Returns { ok:true } on success (including the no-op case where there's no
+// matching churches row to claim — a hand-typed church name), or
+// { ok:false, error } on a real rejection.
+async function writeRealChurchClaim(account){
+  if(!(account.supabaseId && account.churchId)) return { ok:true };
+  var churchLookup = await supabaseClient.from('churches').select('id').eq('legacy_id', account.churchId).maybeSingle();
+  var churchRowId = churchLookup.data && churchLookup.data.id;
+  if(!churchRowId) return { ok:true }; // no matching churches row -- nothing to claim server-side
+  var claimRes = await supabaseClient.from('church_claims').insert({
+    church_id: churchRowId, profile_id: account.supabaseId, status: 'verified'
+  });
+  if(claimRes.error) return { ok:false, error: describeChurchClaimError(claimRes.error) };
+  return { ok:true };
+}
 async function checkChurchVerificationCode(account, entered){
   if(!account.churchCode) return { ok:false, error:'No code has been sent yet. Tap resend below.' };
   if(Date.now() > account.churchCode.expires) return { ok:false, error:'That code has expired — tap resend for a new one.' };
   if(String(entered).trim() !== account.churchCode.value) return { ok:false, error:"That code doesn\u2019t match. Check it and try again." };
 
-  // PHASE 4: REAL CHURCH CLAIMS. The code check above proves this person
-  // received the church's own email — same client-side trust boundary as
-  // personal-email verification (see the Phase 3 change log entry for why
-  // that's unavoidable without a server function). What's NEW here is that
-  // the claim itself, once asserted, is a real database row: church_claims
-  // has a partial unique index (church_claims_one_verified_per_church, from
-  // Phase 2) allowing only one verified claim per church, so a second pastor
-  // who also has a valid code for the same church (a stale code, a shared
-  // inbox, or a client-side attempt to bypass the check entirely) gets a
-  // real constraint violation instead of silently overwriting someone
-  // else's claim in a location-only account list.
-  if(account.supabaseId && account.churchId){
-    var churchLookup = await supabaseClient.from('churches').select('id').eq('legacy_id', account.churchId).maybeSingle();
-    var churchRowId = churchLookup.data && churchLookup.data.id;
-    if(churchRowId){
-      var claimRes = await supabaseClient.from('church_claims').insert({
-        church_id: churchRowId, profile_id: account.supabaseId, status: 'verified'
-      });
-      if(claimRes.error){
-        return { ok:false, error: describeChurchClaimError(claimRes.error) };
-      }
-    }
-    // No matching churches row (e.g. a hand-typed church name with no
-    // directory entry) — nothing to claim server-side; fall through to the
-    // local-only confirmation exactly as before Phase 4.
-  }
+  // The code check above proves this person received the church's own
+  // email -- same client-side trust boundary as personal-email verification
+  // (see the Phase 3 change log entry for why that's unavoidable without a
+  // server function). See writeRealChurchClaim() above for what's NEW.
+  var claim = await writeRealChurchClaim(account);
+  if(!claim.ok) return claim;
 
   account.churchVerified = true;
   account.churchCode = null;
@@ -7274,7 +7326,7 @@ function renderVerifyEmailStage(account){
   });
 }
 
-function submitVerifyEmail(){
+async function submitVerifyEmail(){
   var account = findAccount(pendingVerifyEmail);
   var note = document.getElementById('vfNote');
   if(!account){ location.hash = 'signin'; return; }
@@ -7283,6 +7335,26 @@ function submitVerifyEmail(){
     note.textContent = res.error;
     note.className = 'auth-note error';
     return;
+  }
+  // PHASE 4: a pastor whose church has no email on file never sees the
+  // church-code stage at all (verifyStageFor() sends them straight to
+  // 'done') — checkChurchVerificationCode() (where a real claim normally
+  // gets written) never runs for them. Without this, EVERY pastor claiming
+  // one of the ~99% of directory churches with no email on file — the
+  // entire reason isPastorFullyVerified() treats them as trivially fine —
+  // would end up with no church_claims row at all, and EP-1's save would
+  // then reject their own edits as coming from a non-owner. Same real
+  // claim, same real uniqueness enforcement, just without a code to check
+  // first (there's nothing to check it against).
+  if(account.role === 'pastor' && account.churchId && !churchEmailForAccount(account)){
+    var claim = await writeRealChurchClaim(account);
+    if(!claim.ok){
+      note.textContent = claim.error;
+      note.className = 'auth-note error';
+      return;
+    }
+    account.churchVerified = true;
+    upsertAccount(account);
   }
   // Own their personal email now — sign in rather than making them retype the
   // password they set sixty seconds ago. Does NOT navigate away directly: a
@@ -7834,6 +7906,52 @@ function findEvent(id){ return loadEvents().filter(function(e){ return e.id === 
 // make both of them lie. accent themes the church's own PAGE only.
 function loadChurchProfiles(){ return STORE.get(STORE_KEYS.churchProfiles, {}); }
 function saveChurchProfiles(map){ return STORE.set(STORE_KEYS.churchProfiles, map); }
+// ---- PHASE 4 STEP 2: church overlays now live in the database too ----
+// The local churchProfiles map (above) is still what every render path
+// reads — showDetail()/applyChurchProfile() are unchanged and stay fully
+// synchronous. This function pulls the REAL, shared copy from
+// church_profile_overlays (see supabase/05_phase4_church_profile_overlays.sql)
+// and merges it into that local map, so an edit made on one device/browser
+// becomes visible on another — which local-only storage could never do.
+// Called once at boot (see the bottom of this script), before the first
+// routeFromHash(), so a direct link to an edited church's page renders
+// correctly on first paint rather than needing a second render once the
+// fetch resolves.
+async function syncChurchProfileOverlaysFromDB(){
+  if(!supabaseClient) return;
+  try {
+    var res = await supabaseClient.from('church_profile_overlays').select('*, churches(legacy_id)');
+    if(res.error || !res.data) return;
+    var map = loadChurchProfiles();
+    res.data.forEach(function(row){
+      var legacyId = row.churches && row.churches.legacy_id;
+      if(!legacyId) return;
+      var prof = {};
+      if(row.logo) prof.logo = row.logo;
+      if(row.banner) prof.banner = row.banner;
+      if(row.accent) prof.accent = row.accent;
+      if(row.tagline) prof.tagline = row.tagline;
+      if(row.about) prof.about = row.about;
+      if(row.service_times) prof.serviceTimes = row.service_times;
+      if(row.phone) prof.phone = row.phone;
+      if(row.website) prof.website = row.website;
+      if(row.email) prof.email = row.email;
+      if(row.cta) prof.cta = row.cta;
+      if(row.socials) prof.socials = row.socials;
+      prof.updatedBy = row.updated_by;
+      prof.updatedAt = row.updated_at ? new Date(row.updated_at).getTime() : Date.now();
+      // The database is authoritative once this fetch succeeds — it
+      // overwrites whatever was cached locally, rather than merging field by
+      // field, so a field cleared by the real owner on another device
+      // doesn't keep reappearing here from a stale local copy.
+      map[legacyId] = prof;
+    });
+    saveChurchProfiles(map);
+  } catch(e){
+    // Best-effort sync — a failed fetch just means this tab keeps whatever
+    // it already had cached locally. Never blocks rendering.
+  }
+}
 function churchProfileFor(churchId){
   if(!churchId) return {};
   return loadChurchProfiles()[churchId] || {};
@@ -8706,7 +8824,7 @@ function renderEditChurch(){
   document.getElementById('ecPostEvent').addEventListener('click', function(){
     location.hash = 'post';
   });
-  document.getElementById('ecSave').addEventListener('click', function(){
+  document.getElementById('ecSave').addEventListener('click', async function(){
     captureChurchEditDraft();
     var d = churchEditDraft;
     // Validate the links before anything is written, so a bad one is a
@@ -8759,6 +8877,46 @@ function renderEditChurch(){
     if(Object.keys(socials).length) prof.socials = socials; else delete prof.socials;
     prof.updatedBy = account.email;
     prof.updatedAt = Date.now();
+
+    // PHASE 4 STEP 2: write to the database FIRST, and fail closed if it's
+    // rejected — before this, only the client-side canEditChurch() check
+    // stood between a tampered client and saving edits to a church it
+    // doesn't own. Now the real ownership check (churches.claimed_by, set
+    // only by the Phase 4 step 1 trigger) is enforced by Postgres itself:
+    // a save from an account that isn't the real claimant is rejected here,
+    // not just hidden by the UI. See supabase/05_phase4_church_profile_
+    // overlays.sql. Only accounts with a real supabaseId (every account
+    // created since Phase 3) and a real churches row to point at go through
+    // this — see the fallback note below.
+    if(account.supabaseId && supabaseClient){
+      var churchLookup = await supabaseClient.from('churches').select('id').eq('legacy_id', churchId).maybeSingle();
+      var churchRowId = churchLookup.data && churchLookup.data.id;
+      if(churchRowId){
+        var overlayRes = await supabaseClient.from('church_profile_overlays').upsert({
+          church_id: churchRowId,
+          banner: prof.banner || null, logo: prof.logo || null, accent: prof.accent || null,
+          tagline: prof.tagline || null, about: prof.about || null, service_times: prof.serviceTimes || null,
+          phone: prof.phone || null, website: prof.website || null, email: prof.email || null,
+          cta: prof.cta || null, socials: prof.socials || null,
+          updated_by: account.supabaseId, updated_at: new Date().toISOString()
+        }, { onConflict: 'church_id' });
+        if(overlayRes.error){
+          // A rejected write here almost always means this account isn't
+          // (or is no longer) the church's real claimant — e.g. its local
+          // churchId/churchVerified is stale relative to what
+          // church_claims/claimed_by actually says. Show the real reason
+          // instead of a false "Saved.".
+          churchEditNote = 'Couldn’t save — our records don’t show you as this church’s verified leader. If that seems wrong, contact support.';
+          churchEditNoteClass = 'error';
+          renderEditChurch();
+          return;
+        }
+      }
+      // No matching churches row (a hand-typed church name with no
+      // directory entry) — nothing to save server-side; fall through to the
+      // local-only save exactly as before Phase 4, same as
+      // checkChurchVerificationCode()'s handling of the same case.
+    }
 
     if(Object.keys(prof).length <= 2) delete map[churchId];  // nothing but the stamps left
     else map[churchId] = prof;
@@ -9392,7 +9550,16 @@ runSearch();
 geocodeSeeds(function(){
   applyFilters(); // local only — folds each newly-geocoded seed into what's on screen
 });
-routeFromHash();
+// Pull the real, shared church-overlay data (Phase 4 step 2) into the local
+// cache BEFORE the first route, so a direct link to an edited church's page
+// (e.g. a shared #church-LC-2967 URL) renders with the real banner/tagline/
+// etc. on first paint instead of needing a second render once the fetch
+// resolves. Awaited here, not fired-and-forgotten, for exactly that reason
+// — it only delays the very first route, and only by one network round
+// trip; runSearch() above already painted the list unblocked.
+syncChurchProfileOverlaysFromDB().then(function(){
+  routeFromHash();
+});
 </script>
 </body>
 </html>
