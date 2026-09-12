@@ -1,0 +1,8 @@
+{
+  "appId": "com.churchfinder.app",
+  "appName": "ChurchFinder",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "churchfinder",
+  "private": true,
+  "version": "1.0.0",
+  "description": "ChurchFinder — Capacitor wrapper. index.html itself is still the whole app; everything here exists only to package it for iOS/Android. See supabase/README.md for the backend and capacitor/README.md for what this adds.",
+  "scripts": {
+    "build": "rm -rf www && mkdir -p www && cp index.html www/index.html && cp -r vendor www/vendor",
+    "sync": "npm run build && npx cap sync"
+  },
+  "dependencies": {
+    "@capacitor/camera": "^8.2.4",
+    "@capacitor/core": "^8.5.2",
+    "@capacitor/geolocation": "^8.2.2",
+    "@capacitor/push-notifications": "^8.1.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.2",
+    "@capacitor/ios": "^8.5.2"
+  }
+}

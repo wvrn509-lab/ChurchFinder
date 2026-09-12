@@ -1,5 +1,13 @@
 [build]
   publish = "."
+  # PHASE 6 NOTE: a package.json now exists in the repo root (for the
+  # Capacitor native wrapper — see CAPACITOR.md), which would otherwise make
+  # Netlify auto-detect and run `npm install && npm run build` on every web
+  # deploy. That script only copies files into www/ for Capacitor's own use
+  # and Netlify never publishes www/ (publish is still "."), so it would be
+  # harmless but pointless — pinning an explicit no-op command here skips it
+  # entirely instead of relying on Netlify's auto-detection to stay harmless.
+  command = "true"
 
 # This is a single-file, no-backend static app: things like the EmailJS
 # PUBLIC key and the admin-mode password have to live in index.html itself
