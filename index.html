@@ -767,6 +767,56 @@
   implying reach it doesn't have. Keep that note if you restyle the page.
 
   ===== CHANGE LOG (most recent first) =====
+  - PHASE 4 STEP 3 (of the migration blueprint): real, server-enforced
+    private messaging. Before this, every conversation lived in one flat
+    THREADS array in localStorage — anyone could read anyone else's
+    messages just by editing storage, and a conversation was invisible on
+    any device other than the one it started on (the dev note on
+    STORE_KEYS above said as much: "Still ONE browser only — two devices
+    do not see each other. That needs a server."). Messaging already
+    requires sign-in (myThreadFor()'s own dev note), so this maps cleanly
+    onto RLS keyed to auth.uid() with no anonymous-visitor case to design
+    around.
+    - myThreadFor() now also calls ensureDbThread() (fire-and-forget — it's
+      called synchronously from several click handlers, so it isn't
+      awaited) to give a new or pre-existing local thread a real row in
+      the `threads` table. The real pastor_id is looked up from
+      churches.claimed_by, not trusted from the client, so a message
+      always actually reaches the church's real pastor.
+    - sendChatMessage() (now async) writes every message to the real
+      `messages` table when the thread has a real row and the sender has
+      a real Supabase identity, and fails closed on a rejection — same
+      "no false success" rule as every other write this phase. Threads
+      with no real row yet (the pre-Phase-4 demo conversations, or a
+      narrow timing window right after a brand-new thread is created)
+      keep the exact local-only behavior from before this step.
+    - renderChat() now calls syncThreadMessagesFromDB() once per thread
+      per page load (guarded by t.dbSynced, same one-shot pattern as the
+      redundant-render guards elsewhere in this file), which replaces the
+      local message list with what's actually in the database — this is
+      what makes a conversation started on one device actually readable
+      on another, not just protected from being read by someone else.
+    supabase/06_phase4_messaging.sql adds RLS on threads and messages:
+    each is readable only by its two real participants, a thread can only
+    be created by its real attendee with the church's real current
+    claimant as pastor_id, and a message can only be inserted by a real
+    participant as themselves.
+    DELIBERATELY NOT DONE in this step, same "smallest reviewable slice"
+    reasoning as every phase so far: no live/real-time updates (a thread
+    only re-syncs from the database when it's freshly opened, not while
+    sitting open — the original blueprint calls this out as its own
+    separate Phase 5 concern), no typing indicators or unread-count
+    syncing (both stay exactly as local-only cosmetics they already
+    were), and no message delete/thread delete moved to the database
+    (deleteConversation() is unchanged, local-only).
+    Regression: 6 new checks in /tmp/test_messaging_db.js (an attendee's
+    message creates a real thread and message row; the pastor sees the
+    real message via the database sync, not a locally-shared array; the
+    pastor's reply is also a real row; an outsider — a real, different
+    signed-in account with no relationship to the thread — cannot insert
+    a message into it, rejected by the same RLS a tampered client can't
+    route around). All 136 previously-existing checks re-verified passing
+    (142 total).
   - PHASE 4 STEP 2 (of the migration blueprint): real, server-enforced
     church page editing. Before this, EP-1's save (ecSave) only wrote to
     localStorage — the client-side canEditChurch() check was the only
@@ -6064,6 +6114,34 @@ function visitorIceText(){
 // Find this session's thread with a given church, creating an empty one if needed.
 // One thread per visitor per church — messaging the same church twice continues
 // the existing conversation rather than starting a second one.
+// PHASE 4 STEP 3: gives a local thread a real row in the `threads` table
+// (see supabase/06_phase4_messaging.sql) — this is what makes the
+// conversation exist somewhere other than one browser's localStorage.
+// Deliberately fire-and-forget from myThreadFor() rather than awaited: that
+// function is called synchronously from several click handlers, and making
+// all of THEM async would ripple much further than this step's scope.
+// Because of that, there's a narrow window right after a brand-new thread
+// is created where t.dbId isn't set yet — sendChatMessage() below handles
+// that by falling back to a local-only send for that one message, same as
+// it already does for the pre-Phase-4 demo threads (TH-1/TH-2/TH-3), which
+// have no real account or church claim behind them at all.
+async function ensureDbThread(t, legacyChurchId){
+  var account = currentAccount();
+  if(t.dbId || !account || !account.supabaseId || !supabaseClient) return;
+  var churchLookup = await supabaseClient.from('churches').select('id, claimed_by').eq('legacy_id', legacyChurchId).maybeSingle();
+  var church = churchLookup.data;
+  // No real churches row, or the church has no real verified claimant yet
+  // (e.g. a hand-typed church name, or a pastor who hasn't completed real
+  // verification) — nothing to create a real thread against. The
+  // conversation stays local-only, same as before this step.
+  if(!church || !church.claimed_by) return;
+  var existing = await supabaseClient.from('threads').select('id').eq('church_id', church.id).eq('attendee_id', account.supabaseId).maybeSingle();
+  if(existing.data){ t.dbId = existing.data.id; saveThreads(); return; }
+  var insertRes = await supabaseClient.from('threads').insert({
+    church_id: church.id, attendee_id: account.supabaseId, pastor_id: church.claimed_by
+  }).select('id').maybeSingle();
+  if(insertRes.data){ t.dbId = insertRes.data.id; saveThreads(); }
+}
 function myThreadFor(churchId, churchName, pastorName){
   var account = currentAccount();
   var owner = account ? account.email : null;
@@ -6081,6 +6159,7 @@ function myThreadFor(churchId, churchName, pastorName){
     found.ice = visitorIceText();
     if(account) found.email = account.email;
     saveThreads();
+    if(!found.dbId) ensureDbThread(found, churchId); // backfills a pre-Phase-4 local thread
     return found;
   }
   var t = {
@@ -6090,6 +6169,7 @@ function myThreadFor(churchId, churchName, pastorName){
   };
   THREADS.unshift(t);
   saveThreads();
+  ensureDbThread(t, churchId);
   return t;
 }
 
@@ -6162,10 +6242,46 @@ function renderPastorList(){
 }
 
 // ---- CV-1 conversation ----
+// A short, human "when" for a real timestamp from the database. The demo
+// threads (TH-1/TH-2/TH-3) use hand-written flavor text like "2h ago"
+// instead — this is only for messages synced from the database.
+function relativeTimeFrom(iso){
+  var ms = Date.now() - new Date(iso).getTime();
+  var min = Math.floor(ms / 60000);
+  if(min < 1) return 'Just now';
+  if(min < 60) return min + 'm ago';
+  var hr = Math.floor(min / 60);
+  if(hr < 24) return hr + 'h ago';
+  var day = Math.floor(hr / 24);
+  return day + 'd ago';
+}
+// PHASE 4 STEP 3: pulls the REAL messages for a thread from the database and
+// replaces the local copy with them — same "database is authoritative once
+// this succeeds" rule as syncChurchProfileOverlaysFromDB(). This is what
+// makes a conversation started on one device actually readable on another.
+// Guarded by t.dbSynced so it runs once per thread per page load, not on
+// every redundant re-render (see the routeFromHash() dev note on why those
+// happen) — renderChat() calling itself again once this resolves is exactly
+// the kind of loop that guard exists to prevent.
+async function syncThreadMessagesFromDB(t){
+  if(!t.dbId || !supabaseClient || t.dbSynced) return;
+  t.dbSynced = true;
+  var threadRes = await supabaseClient.from('threads').select('pastor_id, attendee_id').eq('id', t.dbId).maybeSingle();
+  var threadRow = threadRes.data;
+  if(!threadRow) return;
+  var msgsRes = await supabaseClient.from('messages').select('sender_id, body, created_at').eq('thread_id', t.dbId).order('created_at', { ascending: true });
+  if(msgsRes.error || !msgsRes.data) return;
+  t.messages = msgsRes.data.map(function(m){
+    return { by: m.sender_id === threadRow.pastor_id ? 'pastor' : 'visitor', text: m.body, when: relativeTimeFrom(m.created_at) };
+  });
+  saveThreads();
+  if(activeThreadId === t.id) renderChat();
+}
 function renderChat(){
   var t = threadById(activeThreadId);
   var bodyEl = document.getElementById('chatBody');
   if(!t){ location.hash = 'attendee'; return; }
+  syncThreadMessagesFromDB(t); // fire-and-forget; re-renders itself once real data arrives
 
   // Which side you are is a property of THIS thread, not of your account — see
   // roleInThread(). A pastor messaging another church is a visitor there.
@@ -6302,7 +6418,7 @@ function deleteConversation(t){
   location.hash = 'pastor';
 }
 
-function sendChatMessage(){
+async function sendChatMessage(){
   var t = threadById(activeThreadId);
   var input = document.getElementById('chatInput');
   var note = document.getElementById('chatNote');
@@ -6319,6 +6435,26 @@ function sendChatMessage(){
     return;
   }
   var iAmPastor = window.currentRole === 'pastor';
+  // PHASE 4 STEP 3: real send, when this thread has a real row (see
+  // ensureDbThread()) and this account has a real Supabase identity — every
+  // account created since Phase 3 does. Fails closed: a rejected write
+  // (not actually a participant per the database, same spirit as the
+  // church-editor and church-claim checks) shows the real reason instead of
+  // the message quietly only existing in this one browser. Threads with no
+  // dbId (the pre-Phase-4 demo conversations, or a hand-typed church with
+  // no real claimant) keep the exact local-only behavior from before this
+  // step.
+  var account = currentAccount();
+  if(t.dbId && account && account.supabaseId && supabaseClient){
+    var msgRes = await supabaseClient.from('messages').insert({
+      thread_id: t.dbId, sender_id: account.supabaseId, body: text
+    });
+    if(msgRes.error){
+      note.textContent = 'Couldn\u2019t send \u2014 check your connection and try again.';
+      note.className = 'chat-note error';
+      return;
+    }
+  }
   t.messages.push({ by: iAmPastor ? 'pastor' : 'visitor', text: text, when: 'Just now' });
   // Mark unread for the OTHER side — that's what makes the reply visible as new
   // when you flip roles.
