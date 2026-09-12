@@ -767,6 +767,47 @@
   implying reach it doesn't have. Keep that note if you restyle the page.
 
   ===== CHANGE LOG (most recent first) =====
+  - PHASE 4 STEP 4 (of the migration blueprint): real, server-enforced
+    events and posts. Before this, every event and update lived in
+    localStorage — anyone could post as any church just by editing
+    storage, and an attendee's "recap" of a past event was only ever
+    checked against the poster's OWN local clock (isEventPast() compares
+    against Date.now() in the browser making the claim).
+    - The event form (evSubmit), the pastor's update/promo form
+      (updSubmit), and the attendee's recap form (rcSubmit) are all now
+      async and write to the real events/posts tables FIRST, failing
+      closed on rejection — same rule as every real write since Phase 4
+      started. A pastor's event/promo write requires
+      churches.claimed_by = auth.uid() (from Phase 4 step 1); a recap
+      requires the event it names to be a REAL row that has REALLY
+      started in the past by the DATABASE's clock (events.starts_at <
+      now()), not whatever the poster's device claims — this is the part
+      that actually closes the "recap something that never happened, or
+      hasn't happened yet" gap, since a local-only check can't verify
+      anything about a fake event that doesn't exist in the database at all.
+    - A new syncEventsAndPostsFromDB(), called at boot alongside the
+      overlay sync, pulls every real event/post into the same local
+      cache eventsForChurch()/postsForChurch() already read — those stay
+      fully synchronous and unchanged, but now reflect the real shared
+      database. Local entries without a dbId (the pre-Phase-4 way this
+      worked) are left alone; anything with a dbId is rebuilt fresh from
+      what the database actually has.
+    supabase/07_phase4_events_posts.sql adds RLS: both tables are
+    publicly readable (already public data), an event can only be
+    inserted by the church's real claimant, and a post can only be
+    inserted either by the real claimant (kind 'promo'/'update') or by
+    anyone recapping a real, really-past event (kind 'recap').
+    Regression: 6 new checks in /tmp/test_events_posts_db.js (an account
+    whose LOCAL churchId claims a church it never really verified against
+    is rejected when posting an event — real database rejection, not a
+    hidden button; the real claimant's event and recap both succeed and
+    land as real rows). All 142 previously-existing checks re-verified
+    passing (148 total) — fixing along the way a test-file bug (not an
+    app bug) in the pre-existing events/posts suite: separate personas in
+    one browser context need to share one mock backend AND must never
+    call localStorage.clear() on each other's shared account list after
+    the first persona has already signed up, the same class of mistake
+    already caught once this phase in the messaging test.
   - PHASE 4 STEP 3 (of the migration blueprint): real, server-enforced
     private messaging. Before this, every conversation lived in one flat
     THREADS array in localStorage — anyone could read anyone else's
@@ -8008,6 +8049,51 @@ function loadEvents(){ return STORE.get(STORE_KEYS.events, []); }
 function saveEvents(list){ return STORE.set(STORE_KEYS.events, list); }
 function loadPosts(){ return STORE.get(STORE_KEYS.posts, []); }
 function savePosts(list){ return STORE.set(STORE_KEYS.posts, list); }
+// PHASE 4 STEP 4: pulls every real event/post from the database into the
+// same local cache eventsForChurch()/postsForChurch() already read — those
+// stay fully synchronous and unchanged. Same "DB is authoritative for
+// anything with a dbId, local-only entries are left alone" rule as
+// syncChurchProfileOverlaysFromDB(): local entries WITHOUT a dbId (the
+// pre-Phase-4 way this worked, or an event/post that failed to reach the
+// database) are kept as-is; anything WITH a dbId is dropped and rebuilt
+// fresh from what the database actually has, so an edit or deletion made
+// elsewhere doesn't keep reappearing here from a stale local copy. Called
+// once at boot, same as the overlay sync.
+async function syncEventsAndPostsFromDB(){
+  if(!supabaseClient) return;
+  try {
+    var evRes = await supabaseClient.from('events').select('id, title, starts_at, location, description, created_by, created_at, churches(legacy_id)');
+    if(!evRes.error && evRes.data){
+      var localEvents = loadEvents().filter(function(e){ return !e.dbId; });
+      evRes.data.forEach(function(row){
+        var legacyId = row.churches && row.churches.legacy_id;
+        if(!legacyId) return;
+        localEvents.push({
+          id: 'EVT-db-'+row.id, dbId: row.id, churchId: legacyId, churchName: legacyId,
+          title: row.title, date: row.starts_at, location: row.location, description: row.description,
+          createdBy: row.created_by, createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now()
+        });
+      });
+      saveEvents(localEvents);
+    }
+    var poRes = await supabaseClient.from('posts').select('id, event_id, author_id, kind, body, created_at, churches(legacy_id)');
+    if(!poRes.error && poRes.data){
+      var localPosts = loadPosts().filter(function(p){ return !p.dbId; });
+      poRes.data.forEach(function(row){
+        var legacyId2 = row.churches && row.churches.legacy_id;
+        if(!legacyId2) return;
+        localPosts.push({
+          id: 'PST-db-'+row.id, dbId: row.id, churchId: legacyId2, churchName: legacyId2,
+          authorEmail: null, authorName: null, role: row.kind === 'recap' ? 'attendee' : 'pastor', kind: row.kind,
+          eventId: row.event_id ? 'EVT-db-'+row.event_id : null, text: row.body, createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now()
+        });
+      });
+      savePosts(localPosts);
+    }
+  } catch(e){
+    // Best-effort sync, same as the overlay one — never blocks rendering.
+  }
+}
 
 function isEventPast(ev){ return !!ev && Date.parse(ev.date) < Date.now(); }
 function eventsForChurch(churchId){
@@ -8657,19 +8743,44 @@ function renderPost(){
         '<button class="account-btn primary" id="evSubmit">Post event</button>'+
         '<button class="account-btn" id="evCancel" style="margin-left:8px;">Back</button>';
       document.getElementById('evCancel').addEventListener('click', function(){ postMode = null; postNote = null; renderPost(); });
-      document.getElementById('evSubmit').addEventListener('click', function(){
+      document.getElementById('evSubmit').addEventListener('click', async function(){
         var title = document.getElementById('evTitle').value.trim();
         var date = document.getElementById('evDate').value;
         var location = document.getElementById('evLocation').value.trim();
         var desc = document.getElementById('evDesc').value.trim();
         if(!title){ postNote = 'Give the event a title.'; postNoteClass = 'error'; capturePostDraft(); renderPost(); return; }
         if(!date){ postNote = 'Pick a date and time.'; postNoteClass = 'error'; capturePostDraft(); renderPost(); return; }
-        var list = loadEvents();
-        list.push({
+        var newEvent = {
           id: 'EVT-'+Date.now(), churchId: account.churchId, churchName: account.churchName,
           title: title, date: date, location: location, description: desc,
           createdBy: account.email, createdAt: Date.now()
-        });
+        };
+        // PHASE 4 STEP 4: write to the database first, fail closed on
+        // rejection — same rule as every real write since Phase 4 started.
+        // A rejection here almost always means this account isn't (or is no
+        // longer) the church's real claimant.
+        if(account.supabaseId && supabaseClient){
+          var churchLookup = await supabaseClient.from('churches').select('id').eq('legacy_id', account.churchId).maybeSingle();
+          var churchRowId = churchLookup.data && churchLookup.data.id;
+          if(churchRowId){
+            var insertRes = await supabaseClient.from('events').insert({
+              church_id: churchRowId, title: title, starts_at: new Date(date).toISOString(),
+              location: location, description: desc, created_by: account.supabaseId
+            }).select('id').maybeSingle();
+            if(insertRes.error){
+              postNote = 'Couldn’t post — our records don’t show you as this church’s verified leader. If that seems wrong, contact support.';
+              postNoteClass = 'error';
+              capturePostDraft(); renderPost();
+              return;
+            }
+            if(insertRes.data) newEvent.dbId = insertRes.data.id;
+          }
+          // No matching churches row (a hand-typed church name) — nothing to
+          // post server-side; falls through to the local-only post exactly
+          // as before Phase 4.
+        }
+        var list = loadEvents();
+        list.push(newEvent);
         saveEvents(list);
         // Stay on the event form (cleared) rather than resetting postMode —
         // resetting straight back to the choice screen skipped the success
@@ -8693,15 +8804,34 @@ function renderPost(){
       '<button class="account-btn primary" id="updSubmit">Post update</button>'+
       '<button class="account-btn" id="updCancel" style="margin-left:8px;">Back</button>';
     document.getElementById('updCancel').addEventListener('click', function(){ postMode = null; postNote = null; renderPost(); });
-    document.getElementById('updSubmit').addEventListener('click', function(){
+    document.getElementById('updSubmit').addEventListener('click', async function(){
       var text = document.getElementById('updText').value.trim();
       if(!text){ postNote = 'Write something first.'; postNoteClass = 'error'; capturePostDraft(); renderPost(); return; }
-      var list = loadPosts();
-      list.push({
+      var newPost = {
         id: 'PST-'+Date.now(), churchId: account.churchId, churchName: account.churchName,
         authorEmail: account.email, authorName: account.name, role: 'pastor', kind: 'promo',
         eventId: null, text: text, createdAt: Date.now()
-      });
+      };
+      // PHASE 4 STEP 4: same real-write-first, fail-closed rule as the event
+      // form above.
+      if(account.supabaseId && supabaseClient){
+        var churchLookup = await supabaseClient.from('churches').select('id').eq('legacy_id', account.churchId).maybeSingle();
+        var churchRowId = churchLookup.data && churchLookup.data.id;
+        if(churchRowId){
+          var insertRes = await supabaseClient.from('posts').insert({
+            church_id: churchRowId, author_id: account.supabaseId, kind: 'promo', body: text
+          }).select('id').maybeSingle();
+          if(insertRes.error){
+            postNote = 'Couldn’t post — our records don’t show you as this church’s verified leader. If that seems wrong, contact support.';
+            postNoteClass = 'error';
+            capturePostDraft(); renderPost();
+            return;
+          }
+          if(insertRes.data) newPost.dbId = insertRes.data.id;
+        }
+      }
+      var list = loadPosts();
+      list.push(newPost);
       savePosts(list);
       postDraft = {}; // same reasoning as the event form above — keep postMode
       postNote = 'Posted. It’ll show up on your church’s page.'; postNoteClass = 'success';
@@ -8738,15 +8868,40 @@ function renderPost(){
   });
 
   var rcSubmit = document.getElementById('rcSubmit');
-  if(rcSubmit) rcSubmit.addEventListener('click', function(){
+  if(rcSubmit) rcSubmit.addEventListener('click', async function(){
     var text = document.getElementById('rcText').value.trim();
     if(!text){ postNote = 'Write something first.'; postNoteClass = 'error'; capturePostDraft(); renderPost(); return; }
-    var list = loadPosts();
-    list.push({
+    var newPost = {
       id: 'PST-'+Date.now(), churchId: postEventPick.churchId, churchName: postEventPick.churchName,
       authorEmail: account.email, authorName: account.name, role: 'attendee', kind: 'recap',
       eventId: postEventPick.id, text: text, createdAt: Date.now()
-    });
+    };
+    // PHASE 4 STEP 4: real write requires the EVENT itself to have a real
+    // database row (postEventPick.dbId — set by syncEventsAndPostsFromDB()
+    // for any event actually posted through the database). A recap of a
+    // purely local/demo event has nothing real to attach to, so it stays
+    // local-only, same as before this step. The database's own check —
+    // the referenced event must be REAL and REALLY in the past by the
+    // database's clock, not the poster's — is what actually enforces "only
+    // recap something that happened."
+    if(postEventPick.dbId && account.supabaseId && supabaseClient){
+      var churchLookup = await supabaseClient.from('churches').select('id').eq('legacy_id', postEventPick.churchId).maybeSingle();
+      var churchRowId = churchLookup.data && churchLookup.data.id;
+      if(churchRowId){
+        var insertRes = await supabaseClient.from('posts').insert({
+          church_id: churchRowId, event_id: postEventPick.dbId, author_id: account.supabaseId, kind: 'recap', body: text
+        }).select('id').maybeSingle();
+        if(insertRes.error){
+          postNote = 'Couldn’t post — that event doesn’t look like it has really happened yet. Try again once it has.';
+          postNoteClass = 'error';
+          capturePostDraft(); renderPost();
+          return;
+        }
+        if(insertRes.data) newPost.dbId = insertRes.data.id;
+      }
+    }
+    var list = loadPosts();
+    list.push(newPost);
     savePosts(list);
     postDraft = {}; postEventPick = null;
     postNote = 'Posted. Thanks for sharing!'; postNoteClass = 'success';
@@ -9693,7 +9848,7 @@ geocodeSeeds(function(){
 // resolves. Awaited here, not fired-and-forgotten, for exactly that reason
 // — it only delays the very first route, and only by one network round
 // trip; runSearch() above already painted the list unblocked.
-syncChurchProfileOverlaysFromDB().then(function(){
+Promise.all([syncChurchProfileOverlaysFromDB(), syncEventsAndPostsFromDB()]).then(function(){
   routeFromHash();
 });
 </script>
