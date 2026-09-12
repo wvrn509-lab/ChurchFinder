@@ -82,9 +82,19 @@ create table if not exists public.church_claims (
 create unique index if not exists church_claims_one_verified_per_church
   on public.church_claims (church_id) where (status = 'verified');
 
-alter table public.churches
-  add constraint churches_claimed_by_fkey foreign key (claimed_by)
-  references public.profiles (id) on delete set null;
+-- Wrapped in a guard so re-running this whole file (e.g. after a page
+-- refresh mid-run, or just to be safe) never fails on "constraint already
+-- exists" — plain ALTER TABLE ADD CONSTRAINT has no IF NOT EXISTS form.
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'churches_claimed_by_fkey'
+  ) then
+    alter table public.churches
+      add constraint churches_claimed_by_fkey foreign key (claimed_by)
+      references public.profiles (id) on delete set null;
+  end if;
+end $$;
 
 -- ============================================================================
 -- threads / messages — replaces cf.threads.v2. One thread per (church, attendee)
@@ -154,6 +164,9 @@ alter table public.messages      enable row level security;
 alter table public.events        enable row level security;
 alter table public.posts         enable row level security;
 
+-- Postgres has no "CREATE POLICY IF NOT EXISTS" — drop-then-create is the
+-- standard idempotent pattern, so re-running this file is always safe.
+drop policy if exists "churches are publicly readable" on public.churches;
 create policy "churches are publicly readable"
   on public.churches for select
   using (true);
