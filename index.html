@@ -767,6 +767,68 @@
   implying reach it doesn't have. Keep that note if you restyle the page.
 
   ===== CHANGE LOG (most recent first) =====
+  - PHASE 5 STEP 3 (of the migration blueprint): unread counts become real
+    server state. Before this, "N new" badges were per-browser flags
+    (THREADS[i].unreadPastor/unreadVisitor), bumped locally by whichever
+    tab sent the message — that already worked for two tabs sharing one
+    browser (this file's own supported testing pattern), but a pastor's
+    second phone had no way to know anything was waiting, since the count
+    lived nowhere but the sender's own browser.
+    - messages.read_at (a column that's existed since 01_schema.sql but
+      was never read from or written to) now carries the truth. A message
+      counts as unread FOR ME if I didn't send it and read_at is still
+      null.
+    - syncUnreadCountsFromDB(account), fire-and-forget from
+      renderPastorList()/renderAccount() right alongside syncThreadsFromDB(),
+      queries the real count for every already-known real thread and
+      updates the per-thread unreadPastor/unreadVisitor FIELD to match —
+      those fields keep their exact old meaning and every existing read of
+      them (the "N new" badge, the per-row dot on PI-1's list) is
+      unchanged; only where the number comes from is different now.
+    - markThreadReadInDB(t, account) is the write side: marks every
+      message this account received (not sent) in a thread as read, for
+      real. Called from renderChat() (opening a thread) and from
+      pollNewChatMessages() (Step 1) when a poll tick appends something
+      new while the thread is already open — so reading happens the
+      moment a message is actually seen, on whichever device that is.
+    - sendChatMessage() no longer bumps the local unread flag for a REAL
+      (database-backed) send — it already created a real, unread `messages`
+      row, and double-incrementing a local flag on top of that could only
+      drift from what the database actually says. The local bump stays
+      exactly as it was for local-only threads (the pre-Phase-4 demo
+      conversations), which have no database row for read_at to live on.
+    - A REAL, PRE-EXISTING BUG THIS STEP FOUND: the exact same
+      lazy-thenable mistake as Step 2's profiles-patch bug, this time in
+      the write this step itself first introduced during development —
+      caught and fixed before it ever shipped, by testing against a
+      genuinely isolated second device rather than trusting the code by
+      inspection. Every real write in this step now explicitly triggers
+      its request with `.then(function(){}, function(){})`, matching the
+      lesson from Step 2's dev note.
+    - Column-level GRANT (a first for this project's migrations):
+      supabase/10_phase5_unread_counts.sql revokes the default broad
+      UPDATE grant on messages and re-grants it for read_at ONLY, because
+      row-level RLS alone can't stop a participant from rewriting a
+      message's body/sender_id on the same UPDATE that sets read_at —
+      nothing about "I read this" should ever let someone tamper with the
+      conversation record itself.
+    - DELIBERATELY NOT DONE: the "N new" badge still counts CONVERSATIONS
+      with unread activity, not total unread messages — that display
+      convention predates this step and wasn't part of what it needed to
+      fix. Also not done: a live poll for the LIST view itself — sitting
+      on PI-1 the whole time while messages arrive elsewhere still needs
+      an actual re-entry (leaving and coming back, or a reload) to pick up
+      a fresh count, the same "must reopen" limitation Step 1 solved only
+      for an OPEN thread's own messages, not the list. Typing presence
+      across real devices is also still outstanding.
+    Regression: 6 new checks in /tmp/test_unread_counts_db.js — a pastor's
+    real second device pulls the correct unread count (2) from the
+    database without ever opening the thread; opening it marks both
+    messages read for real; the ORIGINAL device shows zero once it
+    re-syncs (proving the count is genuinely shared server state, not a
+    per-browser flag); and a later reply bumps the count back up correctly
+    on a fresh sync. All 166 previously-existing checks re-verified
+    passing (172 total).
   - PHASE 5 STEP 2 (of the migration blueprint): a device discovers EVERY
     real conversation an account is actually part of, not just ones it
     already knew about. PHASE 5 STEP 1's own dev note named this gap
@@ -6449,6 +6511,50 @@ async function syncThreadsFromDB(account){
   }
 }
 
+// PHASE 5 STEP 3: unread counts become real server state instead of a
+// per-browser flag. messages.read_at (a column that's existed since
+// 01_schema.sql but was never written to or read from until this step)
+// now carries the truth; a message counts as unread FOR ME if it wasn't
+// sent by me and read_at is still null. One query per already-known real
+// thread — small numbers in practice (a handful of conversations), same
+// "simple per-item query over a subscription/join" style thread_partner_info()
+// already uses above. Fire-and-forget from renderPastorList()/renderAccount(),
+// same as syncThreadsFromDB() right above it.
+async function syncUnreadCountsFromDB(account){
+  if(!account || !account.supabaseId || !supabaseClient) return;
+  var mine = THREADS.filter(function(t){ return t.dbId && threadAccessible(t, account); });
+  if(!mine.length) return;
+  var changed = false;
+  for(var i = 0; i < mine.length; i++){
+    var t = mine[i];
+    var role = roleInThread(t, account);
+    var res = await supabaseClient.from('messages').select('id')
+      .eq('thread_id', t.dbId).neq('sender_id', account.supabaseId).is('read_at', null);
+    if(res.error || !res.data) continue;
+    var n = res.data.length;
+    if(role === 'pastor' && t.unreadPastor !== n){ t.unreadPastor = n; changed = true; }
+    else if(role === 'visitor' && t.unreadVisitor !== n){ t.unreadVisitor = n; changed = true; }
+  }
+  if(changed){
+    saveThreads();
+    if(currentView === 'pastor') renderPastorList();
+    else if(currentView === 'account') renderAccount();
+  }
+}
+// The write side of the same feature: marks every message THIS account
+// received (not sent) in a thread as read, for real, so the count above
+// actually goes to zero on every device, not just this one. Fire-and-forget
+// from renderChat() (opening a thread) and from a poll tick that just
+// appended something new (see pollNewChatMessages()) — a rejected write
+// here just means the badge stays stale a little longer elsewhere, not a
+// lost message, so this deliberately isn't fail-closed like a real send.
+function markThreadReadInDB(t, account){
+  if(!t.dbId || !account || !account.supabaseId || !supabaseClient) return;
+  supabaseClient.from('messages').update({ read_at: new Date().toISOString() })
+    .eq('thread_id', t.dbId).neq('sender_id', account.supabaseId).is('read_at', null)
+    .then(function(){}, function(){});
+}
+
 // WHICH SIDE OF *THIS* THREAD ARE YOU? This is the single source of truth, and
 // it is per-thread, NOT per-account. That distinction is the fix for a real bug:
 // a pastor account clicking "Communicate with Pastor X" on someone else's church
@@ -6474,6 +6580,7 @@ function renderPastorList(){
   var account = currentAccount();
   if(!account || account.role !== 'pastor'){ requireAuth('pastor'); return; }
   syncThreadsFromDB(account); // fire-and-forget; re-renders itself once real data arrives
+  syncUnreadCountsFromDB(account); // fire-and-forget; re-renders itself once real data arrives
   // A pastor sees their own church's conversations, not every thread in the
   // browser. This is the whole reason PI-1 needed an account behind it.
   var mine = THREADS.filter(function(t){ return threadBelongsToPastor(t, account); });
@@ -6610,6 +6717,11 @@ async function pollNewChatMessages(t){
       var iAmPastor = window.currentRole === 'pastor';
       if(iAmPastor){ if(t.unreadPastor){ t.unreadPastor = 0; saveThreads(); } }
       else { if(t.unreadVisitor){ t.unreadVisitor = 0; saveThreads(); } }
+      // PHASE 5 STEP 3: real, not just local — a message that arrives while
+      // this thread is the one on screen is being read the moment it's
+      // appended, same reasoning as renderChat()'s own markThreadReadInDB() call.
+      var acct = currentAccount();
+      if(acct) markThreadReadInDB(t, acct);
     }
   }
 }
@@ -6673,6 +6785,12 @@ function renderChat(){
   } else {
     if(t.unreadVisitor){ t.unreadVisitor = 0; saveThreads(); }
   }
+  // PHASE 5 STEP 3: the real, server-side half of "opening a thread clears
+  // unread" — the local zeroing above is what THIS browser's own badges
+  // read from and stays instant, but only marking read_at for real is what
+  // makes another device's count (via syncUnreadCountsFromDB()) actually
+  // go to zero too.
+  if(account) markThreadReadInDB(t, account);
 
   // Both sides' faces, resolved from real accounts where they exist so a
   // profile picture shows up in the conversation rather than only on AC-1.
@@ -6839,8 +6957,15 @@ async function sendChatMessage(){
   }
   t.messages.push(newMsg);
   // Mark unread for the OTHER side — that's what makes the reply visible as new
-  // when you flip roles.
-  if(iAmPastor) t.unreadVisitor++; else t.unreadPastor++;
+  // when you flip roles. PHASE 5 STEP 3: only bump this LOCAL flag when the
+  // send was ALSO local-only (no real dbId/account behind it) — a real send
+  // already created a real, unread `messages` row, and the true count for
+  // the other side now comes from syncUnreadCountsFromDB() on whatever
+  // device THEY next open PI-1/AC-1 on. Incrementing here too would just be
+  // a second, purely-local count that could drift from the server's.
+  if(!(t.dbId && account && account.supabaseId && supabaseClient)){
+    if(iAmPastor) t.unreadVisitor++; else t.unreadPastor++;
+  }
   // Sending IS the end of typing — clear before the re-render, or the other
   // side keeps seeing the indicator for another TYPING_TTL_MS after the
   // message they were waiting for has already landed.
@@ -8883,6 +9008,7 @@ function renderAccount(){
   var account = currentAccount();
   if(!account){ requireAuth('account'); return; }
   syncThreadsFromDB(account); // fire-and-forget; re-renders itself once real data arrives
+  syncUnreadCountsFromDB(account); // fire-and-forget; re-renders itself once real data arrives
   var isPastor = account.role === 'pastor';
   var myThreads = THREADS.filter(function(t){
     return isPastor ? threadBelongsToPastor(t, account) : t.owner === account.email;
