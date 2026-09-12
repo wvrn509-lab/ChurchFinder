@@ -8367,17 +8367,29 @@ function avatarHtml(person, size){
 async function uploadImageToStorage(blob, path){
   if(!supabaseClient) return { error: 'Image storage isn’t available right now.' };
   try {
+    // Ask for the session BEFORE uploading, not just when something fails.
+    // getSession() auto-refreshes an expired-but-refreshable access token
+    // using the stored refresh token — a session that *looks* fine
+    // client-side (has a user id) can still carry an expired JWT that
+    // Postgres treats as unauthenticated, which fails RLS with the exact
+    // generic "violates row-level security policy" error and no hint that
+    // the token, not the account, was the problem. Calling this first means
+    // the actual upload call below runs with a token already confirmed
+    // fresh, rather than finding out it was stale only after the rejection.
+    var preSession = await supabaseClient.auth.getSession();
+    var sessionUser = preSession.data && preSession.data.session && preSession.data.session.user;
+    var expiresAt = preSession.data && preSession.data.session && preSession.data.session.expires_at;
+    if(!sessionUser){
+      console.error('uploadImageToStorage: no session before upload attempt.', preSession.error);
+      return { error: 'Couldn’t upload — you’ve been signed out. Please sign in again and retry.' };
+    }
     var upRes = await supabaseClient.storage.from('church-media').upload(path, blob, { upsert: true, contentType: blob.type || 'image/jpeg' });
     if(upRes.error){
       // Logged (not shown to the user) so a real cause — CORS, RLS, network —
       // is visible in the Safari Web Inspector console instead of vanishing
-      // behind the generic message below. An RLS rejection specifically means
-      // auth.uid() didn't match what `path` expects — logging the actual
-      // session (or lack of one) turns "check your session" into a fact
-      // instead of a guess on the next failure.
+      // behind the generic message below.
       console.error('uploadImageToStorage upload error:', upRes.error, 'path:', path);
-      var sessionRes = await supabaseClient.auth.getSession();
-      console.error('uploadImageToStorage session at failure time:', sessionRes.data && sessionRes.data.session && sessionRes.data.session.user && sessionRes.data.session.user.id, sessionRes.error);
+      console.error('uploadImageToStorage session at failure time:', sessionUser.id, 'expires_at:', expiresAt, 'now:', Math.floor(Date.now()/1000));
       return { error: 'Couldn’t upload that image — check your connection and try again.' };
     }
     var urlRes = supabaseClient.storage.from('church-media').getPublicUrl(path);
