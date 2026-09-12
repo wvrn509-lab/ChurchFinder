@@ -3,6 +3,7 @@
   "appName": "ChurchFinder",
   "webDir": "www",
   "server": {
-    "androidScheme": "https"
+    "androidScheme": "https",
+    "iosScheme": "https"
   }
 }

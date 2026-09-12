@@ -8375,12 +8375,19 @@ async function uploadImageToStorage(blob, path){
   if(!supabaseClient) return { error: 'Image storage isn’t available right now.' };
   try {
     var upRes = await supabaseClient.storage.from('church-media').upload(path, blob, { upsert: true, contentType: blob.type || 'image/jpeg' });
-    if(upRes.error) return { error: 'Couldn’t upload that image — check your connection and try again.' };
+    if(upRes.error){
+      // Logged (not shown to the user) so a real cause — CORS, RLS, network —
+      // is visible in the Safari Web Inspector console instead of vanishing
+      // behind the generic message below.
+      console.error('uploadImageToStorage upload error:', upRes.error);
+      return { error: 'Couldn’t upload that image — check your connection and try again.' };
+    }
     var urlRes = supabaseClient.storage.from('church-media').getPublicUrl(path);
     var url = urlRes.data && urlRes.data.publicUrl;
     if(!url) return { error: 'Couldn’t upload that image — check your connection and try again.' };
     return { url: url };
   } catch(e){
+    console.error('uploadImageToStorage threw:', e);
     return { error: 'Couldn’t upload that image — check your connection and try again.' };
   }
 }
