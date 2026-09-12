@@ -756,6 +756,27 @@
   implying reach it doesn't have. Keep that note if you restyle the page.
 
   ===== CHANGE LOG (most recent first) =====
+  - PHASE 3 STEP 1 (of the migration blueprint): wired up the Supabase
+    client, nothing else. supabaseClient is now a real, connected client
+    (created from SUPABASE_URL/SUPABASE_ANON_KEY, same trust model as
+    EMAILJS_PUBLIC_KEY above it — the anon key is DESIGNED to be public;
+    Postgres Row Level Security is what actually restricts it, see
+    supabase/01_schema.sql) — but nothing in the app calls it yet. This is
+    deliberately the smallest possible first slice of the riskiest phase in
+    the blueprint, so it's reviewable and testable on its own before any
+    auth/session logic starts moving off localStorage.
+    The client library (@supabase/supabase-js v2) is vendored at
+    vendor/supabase-js.v2.umd.js instead of loaded from a CDN like Leaflet
+    and EmailJS are — see vendor/README.md for why (short version: this
+    project's dev sandbox has a proxy that resets browser-originated HTTPS
+    to jsDelivr in a way curl/Node don't hit; vendoring sidesteps it, and
+    also means the login/data path doesn't depend on a third party's CDN
+    uptime for real users either).
+    Regression: all 97 existing checks still pass; +6 new checks in
+    /tmp/test_supabase_client.js confirm the vendored library loads, the
+    client is created with the real project's URL/key, and a real query
+    against the live churches table (network-mocked in the test itself for
+    determinism, see that file's comments) returns real seeded rows.
   - FIXED SILENT DATA LOSS WHEN localStorage IS FULL — this was the real
     cause behind the "my edits aren't saving" report, and it had nothing to
     do with the deploy (see the entry below, which guessed wrong). Every
@@ -3990,6 +4011,10 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+<!-- Vendored rather than loaded from a CDN: keeps the login/data path from
+     depending on a third party's uptime, and lets this file be tested without
+     network access. See vendor/README.md for how to update the version. -->
+<script src="vendor/supabase-js.v2.umd.js"></script>
 <script>
 
 var DENOM_COLORS = {
@@ -6427,6 +6452,22 @@ var EMAILJS_PUBLIC_KEY = 'oKBsZibMtFx-FR4fO';
 var EMAILJS_SERVICE_ID = 'service_rtn2sws';
 var EMAILJS_TEMPLATE_ID = 'template_es9i48u';
 if(window.emailjs) emailjs.init({ publicKey: EMAILJS_PUBLIC_KEY });
+
+// ---- Supabase (Phase 3 of the migration blueprint) ----
+// The anon/public key is designed to sit in client-side code, same as
+// EmailJS's public key above — it authenticates as the "anon" role, which
+// Postgres Row Level Security then restricts (see supabase/01_schema.sql).
+// It is NOT a secret; the service_role key is, and must never appear here.
+//
+// supabaseClient is created but not yet used by anything — this is step one
+// of Phase 3 (wire up the client, verify it loads, change nothing else) so
+// the change is reviewable and testable on its own before auth logic starts
+// moving off localStorage.
+var SUPABASE_URL = 'https://mrvqhmtbvcnciihiopbn.supabase.co';
+var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1ydnFobXRidmNuY2lpaGlvcGJuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkxNjUyOTcsImV4cCI6MjEwNDc0MTI5N30.FfGAsh9mi3uFbdnyHMb3rITxsgg8JiMlcNj--4jWlGM';
+var supabaseClient = window.supabase
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
 
 // Actually sends the confirmation email. Returns the EmailJS send promise so
 // callers can show real success/failure feedback (see renderVerify() and its
