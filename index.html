@@ -767,6 +767,44 @@
   implying reach it doesn't have. Keep that note if you restyle the page.
 
   ===== CHANGE LOG (most recent first) =====
+  - PHASE 4 STEP 1 (of the migration blueprint): real, server-enforced
+    church claiming. Before this, "who owns this church's edit rights"
+    lived only in each account's local churchId/churchVerified fields —
+    trivially editable via devtools — and churchAlreadyClaimed() only
+    warned by scanning the local account list, enforcing nothing (the
+    write itself was never blocked). checkChurchVerificationCode() now
+    also inserts a real church_claims row (status:'verified') once the
+    emailed code checks out, and Phase 2's partial unique index
+    (church_claims_one_verified_per_church) means a second pastor who ends
+    up with a valid code for the same church gets a real database
+    rejection — "This church was just claimed by someone else" — instead
+    of silently overwriting a local list entry. A trigger
+    (sync_church_claimed_by(), in supabase/04_phase4_church_claims.sql)
+    keeps churches.claimed_by in sync automatically, and a new churches
+    UPDATE policy scoped to claimed_by = auth.uid() is in place for when
+    EP-1's save flow moves to talking to the database directly (a later
+    step — nothing calls that policy yet).
+    What's still client-enforced, deliberately: the personal-email and
+    church-affiliation CODE CHECKS themselves. There's no server to verify
+    "did this browser really receive the emailed code" without an edge
+    function (Phase 8 territory) — same limitation already noted for
+    personal-email verification in the Phase 3 entry below. What moved
+    here is the one piece that doesn't need that: once a claim is
+    asserted, nobody else can also assert it for the same church.
+    churchAlreadyClaimed() is now explicitly documented as advisory-only
+    (a wasted-round-trip warning, not enforcement) rather than silently
+    left looking authoritative.
+    adminForceVerify() (AD-2's no-code bypass) does NOT create a
+    church_claims row — there's no code to have proven anything against —
+    so an account force-verified that way will NOT be treated as a
+    church's real owner once ownership checks move to the database. Noted
+    inline; that's intentional, not a bug to fix later.
+    Regression: 10 new checks in /tmp/test_church_claims_db.js (a real
+    claim writes the right row against the real church id not the legacy
+    id, a conflicting claim is rejected and does NOT mark the account
+    verified, a hand-typed/unlisted church with no matching churches row
+    still works locally same as before). All 121 previously-existing
+    checks re-verified passing.
   - PHASE 3 STEP 2 (of the migration blueprint): sign-up and sign-in now go
     through real Supabase Auth instead of the browser-side salted-SHA-256
     scheme. createAccount() calls supabase.auth.signUp() and inserts a
@@ -6634,10 +6672,51 @@ function issueChurchVerificationCode(account){
   upsertAccount(account);
   return sendChurchVerificationEmail(account);
 }
-function checkChurchVerificationCode(account, entered){
+// Turns a Postgres error from the church_claims insert into a real, honest
+// message. The one that matters: a unique-constraint violation on
+// church_claims_one_verified_per_church means someone else's verified claim
+// on this church landed first — Postgres itself refuses the second one, not
+// just a client-side warning a malicious client could ignore. See the
+// PHASE 4: REAL CHURCH CLAIMS dev note.
+function describeChurchClaimError(err){
+  var msg = (err && err.message) || '';
+  if(/church_claims_one_verified_per_church|duplicate key/i.test(msg)){
+    return 'This church was just claimed by someone else. Pick a different church, or contact support if this is a mistake.';
+  }
+  return 'Something went wrong confirming your church. Check your connection and try again.';
+}
+async function checkChurchVerificationCode(account, entered){
   if(!account.churchCode) return { ok:false, error:'No code has been sent yet. Tap resend below.' };
   if(Date.now() > account.churchCode.expires) return { ok:false, error:'That code has expired — tap resend for a new one.' };
   if(String(entered).trim() !== account.churchCode.value) return { ok:false, error:"That code doesn\u2019t match. Check it and try again." };
+
+  // PHASE 4: REAL CHURCH CLAIMS. The code check above proves this person
+  // received the church's own email — same client-side trust boundary as
+  // personal-email verification (see the Phase 3 change log entry for why
+  // that's unavoidable without a server function). What's NEW here is that
+  // the claim itself, once asserted, is a real database row: church_claims
+  // has a partial unique index (church_claims_one_verified_per_church, from
+  // Phase 2) allowing only one verified claim per church, so a second pastor
+  // who also has a valid code for the same church (a stale code, a shared
+  // inbox, or a client-side attempt to bypass the check entirely) gets a
+  // real constraint violation instead of silently overwriting someone
+  // else's claim in a location-only account list.
+  if(account.supabaseId && account.churchId){
+    var churchLookup = await supabaseClient.from('churches').select('id').eq('legacy_id', account.churchId).maybeSingle();
+    var churchRowId = churchLookup.data && churchLookup.data.id;
+    if(churchRowId){
+      var claimRes = await supabaseClient.from('church_claims').insert({
+        church_id: churchRowId, profile_id: account.supabaseId, status: 'verified'
+      });
+      if(claimRes.error){
+        return { ok:false, error: describeChurchClaimError(claimRes.error) };
+      }
+    }
+    // No matching churches row (e.g. a hand-typed church name with no
+    // directory entry) — nothing to claim server-side; fall through to the
+    // local-only confirmation exactly as before Phase 4.
+  }
+
   account.churchVerified = true;
   account.churchCode = null;
   upsertAccount(account);
@@ -7301,11 +7380,11 @@ function renderVerifyChurchStage(account){
   });
 }
 
-function submitVerifyChurch(){
+async function submitVerifyChurch(){
   var account = findAccount(pendingVerifyEmail);
   var note = document.getElementById('vfChurchNote');
   if(!account){ location.hash = 'signin'; return; }
-  var res = checkChurchVerificationCode(account, document.getElementById('vfChurchCode').value);
+  var res = await checkChurchVerificationCode(account, document.getElementById('vfChurchCode').value);
   if(!res.ok){
     note.textContent = res.error;
     note.className = 'auth-note error';
@@ -7601,6 +7680,14 @@ function findClaimableChurch(id){
 }
 // True if some OTHER account already claims this church. exceptEmail lets an
 // account check against its own current listing without flagging itself.
+// ADVISORY ONLY as of Phase 4 — this scans the local account list purely to
+// warn someone before they go through email verification for a church
+// someone else already has (a wasted round trip otherwise). It enforces
+// nothing: the REAL, server-side exclusivity is the church_claims table's
+// partial unique index (church_claims_one_verified_per_church), checked at
+// the moment checkChurchVerificationCode() writes the claim. A stale or
+// bypassed local account list can no longer result in two verified owners
+// of the same church — the database rejects the second one outright.
 function churchAlreadyClaimed(churchId, exceptEmail){
   if(!churchId) return false;
   var except = exceptEmail ? normalizeEmail(exceptEmail) : null;
@@ -8843,6 +8930,15 @@ function adminSignInAs(account){
 // Stamps an account as confirmed without a code. For a pastor this covers BOTH
 // gates, since the church-affiliation code is the one an admin usually can't
 // receive (it goes to the church's own inbox).
+// PHASE 4 NOTE: unlike a real church-affiliation verification
+// (checkChurchVerificationCode()), this does NOT write a church_claims row
+// or set churches.claimed_by — there's no code to have proven anything
+// against, so there's nothing to assert server-side. An account force-
+// verified this way passes the app's own (still client-side) isPastorFully
+// Verified() check, but a real ownership check keyed to claimed_by (once
+// EP-1's save flow moves to one, a later step) will NOT treat it as the
+// church's owner. That gap is deliberate: this button is explicitly a
+// testing bypass, not a way to grant real ownership.
 function adminForceVerify(account){
   account.verified = true;
   account.code = null;
