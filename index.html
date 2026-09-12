@@ -12,6 +12,12 @@
   See the GATEWAY/ROUTING section below for the full page/route map.
 
   ===== ARCHITECTURE =====
+  - PHASE 6: Camera integration (Capacitor). Three image pickers (avatar on AC-1,
+    banner + logo on EC) now use @capacitor/camera on native (iOS/Android) and
+    fall back to file input on web. capturePhotoFromCamera() detects platform
+    (Capacitor.isNativePlatform()) and dispatches; the image blob is processed
+    through readImageAsAvatar() / readImageAsBanner() (crop + resize), then
+    uploaded to Supabase storage via uploadImageToStorage().
   - Geocoding (turns a typed location into lat/lon): tries Photon (photon.komoot.io)
     first, falls back to Nominatim (nominatim.openstreetmap.org) if Photon fails.
     Function: geocode() -> geocodePhoton() / geocodeNominatim().
@@ -8802,37 +8808,87 @@ var CHURCH_SOCIALS = [
 // uploadImageToStorage() above readImageAsAvatar().
 var BANNER_W = 1200, BANNER_H = 400;
 function readImageAsBanner(file, cb){
-  if(!file){ cb('No file chosen.'); return; }
-  if(!/^image\//.test(file.type || '')){ cb('That file isn’t an image.'); return; }
-  if(file.size > 12 * 1024 * 1024){ cb('That image is too big — pick one under 12 MB.'); return; }
+  if(!file){ cb(‘No file chosen.’); return; }
+  if(!/^image\//.test(file.type || ‘’)){ cb(‘That file isn’t an image.’); return; }
+  if(file.size > 12 * 1024 * 1024){ cb(‘That image is too big — pick one under 12 MB.’); return; }
   var reader = new FileReader();
-  reader.onerror = function(){ cb('Couldn’t read that file.'); };
+  reader.onerror = function(){ cb(‘Couldn’t read that file.’); };
   reader.onload = function(){
     var img = new Image();
-    img.onerror = function(){ cb('That image couldn’t be opened.'); };
+    img.onerror = function(){ cb(‘That image couldn’t be opened.’); };
     img.onload = function(){
       try{
-        if(!img.width || !img.height){ cb('That image looks empty.'); return; }
-        // Centre-crop to the banner's aspect ratio, then scale to fit.
+        if(!img.width || !img.height){ cb(‘That image looks empty.’); return; }
+        // Centre-crop to the banner’s aspect ratio, then scale to fit.
         var targetRatio = BANNER_W / BANNER_H;
         var srcW = img.width, srcH = img.height;
         var cropW = srcW, cropH = srcW / targetRatio;
         if(cropH > srcH){ cropH = srcH; cropW = srcH * targetRatio; }
-        var canvas = document.createElement('canvas');
+        var canvas = document.createElement(‘canvas’);
         canvas.width = BANNER_W; canvas.height = BANNER_H;
-        canvas.getContext('2d').drawImage(
+        canvas.getContext(‘2d’).drawImage(
           img, (srcW - cropW)/2, (srcH - cropH)/2, cropW, cropH,
           0, 0, BANNER_W, BANNER_H
         );
         canvas.toBlob(function(blob){
-          if(!blob){ cb('That image couldn’t be processed.'); return; }
+          if(!blob){ cb(‘That image couldn’t be processed.’); return; }
           cb(null, blob);
-        }, 'image/jpeg', 0.82);
-      }catch(e){ cb('That image couldn’t be processed.'); }
+        }, ‘image/jpeg’, 0.82);
+      }catch(e){ cb(‘That image couldn’t be processed.’); }
     };
     img.src = reader.result;
   };
   reader.readAsDataURL(file);
+}
+
+// PHASE 6: Capacitor camera integration. On native (iOS/Android), this calls
+// the camera API. On web, falls back to file input. capturePhotoFromCamera()
+// returns a blob suitable for readImageAsAvatar() / readImageAsBanner().
+function capturePhotoFromCamera(cb){
+  if(!window.Capacitor || !window.Capacitor.isNativePlatform()){
+    // Web: use file input fallback.
+    var input = document.createElement(‘input’);
+    input.type = ‘file’;
+    input.accept = ‘image/*’;
+    input.addEventListener(‘change’, function(){
+      if(input.files && input.files[0]){
+        // Convert File to Blob via FileReader so both paths work uniformly.
+        var reader = new FileReader();
+        reader.onerror = function(){ cb(‘Couldn’t read file.’); };
+        reader.onload = function(){
+          var blob = new Blob([reader.result], { type: input.files[0].type });
+          cb(null, blob);
+        };
+        reader.readAsArrayBuffer(input.files[0]);
+      }else{
+        cb(‘No file chosen.’);
+      }
+    });
+    input.click();
+    return;
+  }
+  // Native: use Capacitor camera.
+  if(!window.Camera){ cb(‘Camera not available.’); return; }
+  window.Camera.getPhoto({
+    quality: 90,
+    allowEditing: false,
+    resultType: window.CameraResultType.Base64,
+    source: window.CameraSource.Prompt
+  }).then(function(image){
+    // Convert base64 to blob.
+    var binaryString = atob(image.base64String);
+    var bytes = new Uint8Array(binaryString.length);
+    for(var i = 0; i < binaryString.length; i++){
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    var blob = new Blob([bytes], { type: ‘image/jpeg’ });
+    cb(null, blob);
+  }).catch(function(err){
+    if(err && err.message !== ‘User cancelled photos app’){
+      cb(‘Couldn’t capture photo.’);
+    }
+    // If user cancelled, don’t error — they just didn’t pick anything.
+  });
 }
 
 // ---- AC-1 profile editing state ----
@@ -8863,7 +8919,6 @@ function profileEditorHtml(account){
         '<button type="button" class="profile-file-btn" id="pfPickBtn">'+
           (shownPhoto ? 'Change photo' : 'Upload photo')+'</button>'+
         (shownPhoto ? '<button type="button" class="profile-file-btn danger" id="pfRemoveBtn">Remove photo</button>' : '')+
-        '<input type="file" id="pfFile" accept="image/*" style="display:none;">'+
       '</div>'+
     '</div>'+
     '<div class="auth-field"><label for="pfName">Display name</label>'+
@@ -8885,32 +8940,33 @@ function profileEditorHtml(account){
 // so renderAccount() stays a single innerHTML assignment plus event wiring,
 // matching how every other page in this file is built.
 function wireProfileEditor(account){
-  var fileInput = document.getElementById('pfFile');
-  var pickBtn = document.getElementById('pfPickBtn');
-  if(pickBtn) pickBtn.addEventListener('click', function(){ fileInput.click(); });
-  if(fileInput) fileInput.addEventListener('change', function(){
-    // Keep whatever is typed before the re-render below throws the DOM away.
-    profileDraft.bio = document.getElementById('pfBio').value;
-    readImageAsAvatar(fileInput.files && fileInput.files[0], async function(err, blob){
-      if(err){ profileDraft.note = err; profileDraft.noteClass = 'error'; renderAccount(); return; }
-      // PHASE 4 STEP 5: upload for real instead of embedding base64 — see
-      // the note on uploadImageToStorage(). Every account created since
-      // Phase 3 has a real supabaseId; an account that somehow doesn't
-      // (shouldn't happen) just can't upload a real photo, same spirit as
-      // every other "no real Supabase identity" fallback this phase.
-      if(!(account.supabaseId && supabaseClient)){
-        profileDraft.note = 'Couldn’t upload — your account isn’t fully set up yet.';
-        profileDraft.noteClass = 'error';
+  var pickBtn = document.getElementById(‘pfPickBtn’);
+  if(pickBtn) pickBtn.addEventListener(‘click’, function(){
+    capturePhotoFromCamera(function(err, blob){
+      if(err){ profileDraft.note = err; profileDraft.noteClass = ‘error’; renderAccount(); return; }
+      // Keep whatever is typed before the re-render below throws the DOM away.
+      profileDraft.bio = document.getElementById(‘pfBio’).value;
+      readImageAsAvatar(blob, async function(err, processedBlob){
+        if(err){ profileDraft.note = err; profileDraft.noteClass = ‘error’; renderAccount(); return; }
+        // PHASE 4 STEP 5: upload for real instead of embedding base64 — see
+        // the note on uploadImageToStorage(). Every account created since
+        // Phase 3 has a real supabaseId; an account that somehow doesn’t
+        // (shouldn’t happen) just can’t upload a real photo, same spirit as
+        // every other "no real Supabase identity" fallback this phase.
+        if(!(account.supabaseId && supabaseClient)){
+          profileDraft.note = ‘Couldn’t upload — your account isn’t fully set up yet.’;
+          profileDraft.noteClass = ‘error’;
+          renderAccount();
+          return;
+        }
+        profileDraft.note = ‘Uploading…’; profileDraft.noteClass = ‘’;
         renderAccount();
-        return;
-      }
-      profileDraft.note = 'Uploading…'; profileDraft.noteClass = '';
-      renderAccount();
-      var path = 'avatars/' + account.supabaseId + '-' + Date.now() + '.jpg';
-      var res = await uploadImageToStorage(blob, path);
-      if(res.error){ profileDraft.note = res.error; profileDraft.noteClass = 'error'; renderAccount(); return; }
-      profileDraft.photo = res.url; profileDraft.note = null; profileDraft.noteClass = '';
-      renderAccount();
+        var path = ‘avatars/’ + account.supabaseId + ‘-’ + Date.now() + ‘.jpg’;
+        var res = await uploadImageToStorage(processedBlob, path);
+        if(res.error){ profileDraft.note = res.error; profileDraft.noteClass = ‘error’; renderAccount(); return; }
+        profileDraft.photo = res.url; profileDraft.note = null; profileDraft.noteClass = ‘’;
+        renderAccount();
+      });
     });
   });
   var removeBtn = document.getElementById('pfRemoveBtn');
@@ -9655,8 +9711,7 @@ function renderEditChurch(){
         (safePhoto(shownBanner) ? '' : 'No banner yet')+
       '</div>'+
       '<div class="account-actions" style="margin-top:12px;">'+
-        '<label class="account-btn" for="ecBannerInput" style="cursor:pointer;">Choose banner</label>'+
-        '<input type="file" id="ecBannerInput" accept="image/*" hidden>'+
+        '<button type="button" class="account-btn" id="ecBannerInput">Choose banner</button>'+
         (safePhoto(shownBanner) ? '<button class="account-btn" id="ecBannerRemove">Remove</button>' : '')+
       '</div>'+
       '<p class="auth-hint">A wide photo of your building or congregation works best — it gets cropped to a banner shape.</p>'+
@@ -9669,8 +9724,7 @@ function renderEditChurch(){
           ? '<span class="ec-logo-preview" style="background-image:url(\''+shownLogo+'\')"></span>'
           : '<span class="ec-logo-preview empty">'+escapeHtml(initialsFor(base.name))+'</span>')+
         '<div class="account-actions" style="margin:0;">'+
-          '<label class="account-btn" for="ecLogoInput" style="cursor:pointer;">Choose logo</label>'+
-          '<input type="file" id="ecLogoInput" accept="image/*" hidden>'+
+          '<button type="button" class="account-btn" id="ecLogoInput">Choose logo</button>'+
           (safePhoto(shownLogo) ? '<button class="account-btn" id="ecLogoRemove">Remove</button>' : '')+
         '</div>'+
       '</div>'+
@@ -9742,48 +9796,54 @@ function renderEditChurch(){
   });
 
   function wireImagePicker(inputId, removeId, reader, key){
-    var input = document.getElementById(inputId);
-    if(input) input.addEventListener('change', function(){
-      var file = input.files && input.files[0];
+    var btn = document.getElementById(inputId);
+    if(btn) btn.addEventListener(‘click’, function(){
       captureChurchEditDraft();
-      reader(file, async function(err, blob){
+      capturePhotoFromCamera(function(err, blob){
         if(err){
-          churchEditNote = err; churchEditNoteClass = 'error';
+          churchEditNote = err; churchEditNoteClass = ‘error’;
           renderEditChurch();
           return;
         }
-        // PHASE 4 STEP 5: upload for real instead of embedding base64 —
-        // requires the real church row id (churches RLS checks claimed_by
-        // against that, not the legacy id) and a real Supabase identity,
-        // which every account created since Phase 3 has. A rejected upload
-        // (a real "you're not this church's verified leader" case, same as
-        // every other write this phase) shows the real reason and leaves
-        // the draft untouched rather than claiming a picked image is ready
-        // to save when it never left this browser.
-        churchEditNote = 'Uploading…'; churchEditNoteClass = '';
-        renderEditChurch();
-        var churchLookup = await supabaseClient.from('churches').select('id').eq('legacy_id', churchId).maybeSingle();
-        var churchRowId = churchLookup.data && churchLookup.data.id;
-        if(!churchRowId){
-          churchEditNote = 'Couldn’t upload — this church has no real record to attach an image to.';
-          churchEditNoteClass = 'error';
+        reader(blob, async function(err, processedBlob){
+          if(err){
+            churchEditNote = err; churchEditNoteClass = ‘error’;
+            renderEditChurch();
+            return;
+          }
+          // PHASE 4 STEP 5: upload for real instead of embedding base64 —
+          // requires the real church row id (churches RLS checks claimed_by
+          // against that, not the legacy id) and a real Supabase identity,
+          // which every account created since Phase 3 has. A rejected upload
+          // (a real "you’re not this church’s verified leader" case, same as
+          // every other write this phase) shows the real reason and leaves
+          // the draft untouched rather than claiming a picked image is ready
+          // to save when it never left this browser.
+          churchEditNote = ‘Uploading…’; churchEditNoteClass = ‘’;
           renderEditChurch();
-          return;
-        }
-        var path = 'churches/' + churchRowId + '/' + key + '-' + Date.now() + '.jpg';
-        var res = await uploadImageToStorage(blob, path);
-        if(res.error){
-          churchEditNote = res.error; churchEditNoteClass = 'error';
+          var churchLookup = await supabaseClient.from(‘churches’).select(‘id’).eq(‘legacy_id’, churchId).maybeSingle();
+          var churchRowId = churchLookup.data && churchLookup.data.id;
+          if(!churchRowId){
+            churchEditNote = ‘Couldn’t upload — this church has no real record to attach an image to.’;
+            churchEditNoteClass = ‘error’;
+            renderEditChurch();
+            return;
+          }
+          var path = ‘churches/’ + churchRowId + ‘/’ + key + ‘-’ + Date.now() + ‘.jpg’;
+          var res = await uploadImageToStorage(processedBlob, path);
+          if(res.error){
+            churchEditNote = res.error; churchEditNoteClass = ‘error’;
+            renderEditChurch();
+            return;
+          }
+          churchEditDraft[key] = res.url;
+          churchEditNote = null; churchEditNoteClass = ‘’;
           renderEditChurch();
-          return;
-        }
-        churchEditDraft[key] = res.url;
-        churchEditNote = null; churchEditNoteClass = '';
-        renderEditChurch();
+        });
       });
     });
     var remove = document.getElementById(removeId);
-    if(remove) remove.addEventListener('click', function(){
+    if(remove) remove.addEventListener(‘click’, function(){
       captureChurchEditDraft();
       churchEditDraft[key] = null;   // null means "remove", vs undefined "unchanged"
       renderEditChurch();
