@@ -2576,7 +2576,10 @@
     --text-dim:#5C6270;
   }
   *{box-sizing:border-box;}
-  html,body{margin:0;padding:0;}
+  /* Side-to-side scroll/bounce reads as a website glitch on iOS, not an app
+     ("you shouldn't be able to scroll side to side"); this is the standard
+     fix rather than hunting for whichever element is a pixel too wide. */
+  html,body{margin:0;padding:0;overflow-x:hidden;max-width:100%;}
   body{
     background:var(--parchment);
     color:var(--ink);
@@ -2663,7 +2666,11 @@
     border-radius:8px;
     padding:0 12px;
     font-family:'Inter',sans-serif;
-    font-size:14px;
+    /* 16px, not 14: iOS Safari/WKWebView auto-zooms the whole page on focus
+       for any text input under 16px, which is what made typing feel like it
+       "scrolled everything out of frame" — this is the fix, everywhere below
+       that shares the symptom. */
+    font-size:16px;
     background:#fff;
     color:var(--ink);
   }
@@ -3008,7 +3015,7 @@
     display:flex;
     align-items:center;
     justify-content:center;
-    padding:48px 24px;
+    padding:calc(48px + env(safe-area-inset-top)) 24px calc(48px + env(safe-area-inset-bottom));
   }
   .gate-rose{
     position:absolute; top:-140px; right:-140px;
@@ -3418,7 +3425,7 @@
   .chat-composer textarea{
     width:100%; box-sizing:border-box;
     border:1px solid var(--line); border-radius:10px;
-    padding:11px 13px; font-family:'Inter',sans-serif; font-size:14px;
+    padding:11px 13px; font-family:'Inter',sans-serif; font-size:16px;
     background:#fff; color:#1B1B18; min-height:78px; resize:vertical;
   }
   .chat-composer textarea:focus{ outline:2px solid var(--brass); outline-offset:1px; }
@@ -3585,7 +3592,7 @@
     border-radius:8px;
     padding:0 14px;
     font-family:'Inter',sans-serif;
-    font-size:14px;
+    font-size:16px;
     background:rgba(255,255,255,0.06);
     color:var(--parchment);
   }
@@ -3686,7 +3693,7 @@
     border-radius:8px;
     padding:0 14px;
     font-family:'Inter',sans-serif;
-    font-size:14px;
+    font-size:16px;
     background:rgba(255,255,255,0.06);
     color:var(--parchment);
   }
@@ -3731,7 +3738,7 @@
   .auth-field textarea{
     width:100%; box-sizing:border-box; resize:vertical;
     border:1px solid rgba(255,255,255,0.16); border-radius:8px; padding:12px 14px;
-    font-family:'Inter',sans-serif; font-size:14px; line-height:1.5;
+    font-family:'Inter',sans-serif; font-size:16px; line-height:1.5;
     background:rgba(255,255,255,0.06); color:var(--parchment);
   }
   .auth-field textarea::placeholder{ color:#8A93AC; }
@@ -3739,7 +3746,7 @@
   .auth-field input, .auth-field select{
     width:100%; height:46px; box-sizing:border-box;
     border:1px solid rgba(255,255,255,0.16); border-radius:8px; padding:0 14px;
-    font-family:'Inter',sans-serif; font-size:14px;
+    font-family:'Inter',sans-serif; font-size:16px;
     background:rgba(255,255,255,0.06); color:var(--parchment);
   }
   /* Password fields sit in a flex row with the eye button OUTSIDE the input,
@@ -3766,7 +3773,7 @@
   .church-picker-input{
     width:100%; height:46px; box-sizing:border-box;
     border:1px solid rgba(255,255,255,0.16); border-radius:8px; padding:0 14px;
-    font-family:'Inter',sans-serif; font-size:14px;
+    font-family:'Inter',sans-serif; font-size:16px;
     background:rgba(255,255,255,0.06); color:var(--parchment);
   }
   .church-picker-input::placeholder{ color:#8A93AC; }
@@ -8904,7 +8911,7 @@ function profileEditorHtml(account){
     '<div class="auth-field"><label for="pfBio">Bio</label>'+
       '<textarea id="pfBio" rows="3" maxlength="'+(PROFILE_BIO_MAX + 40)+'" '+
         'style="width:100%;box-sizing:border-box;border:1px solid var(--line);border-radius:10px;'+
-        'padding:11px 13px;font-family:\'Inter\',sans-serif;font-size:14px;background:#fff;color:#1B1B18;resize:vertical;" '+
+        'padding:11px 13px;font-family:\'Inter\',sans-serif;font-size:16px;background:#fff;color:#1B1B18;resize:vertical;" '+
         'placeholder="A sentence or two about you.">'+escapeHtml(bio)+'</textarea>'+
       '<p class="profile-counter'+(over?' over':'')+'" id="pfCount">'+bio.length+' / '+PROFILE_BIO_MAX+'</p></div>'+
     '<div class="account-actions" style="margin-top:4px;">'+
