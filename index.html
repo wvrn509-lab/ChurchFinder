@@ -8890,10 +8890,19 @@ function capturePhotoFromCamera(cb){
     var blob = new Blob([bytes], { type: "image/jpeg" });
     cb(null, blob);
   }).catch(function(err){
-    if(err && err.message !== "User cancelled photos app"){
+    // Logged unconditionally (not just on the "real error" branch) so a
+    // cancel string this doesn't recognize is visible in the console instead
+    // of silently misclassifying as a real failure, or vice versa.
+    console.error('Camera.getPhoto rejected:', err && err.message, err);
+    // iOS's actual cancel message has drifted across Capacitor versions
+    // ("User cancelled photos app", "User cancelled", etc.) — matching on
+    // "cancel" case-insensitively is more robust than pinning one exact
+    // string that may not match this plugin version.
+    var msg = (err && err.message || '').toLowerCase();
+    if(msg.indexOf('cancel') === -1){
       cb("Couldn’t capture photo.");
     }
-    // If user cancelled, don't error — they just didn't pick anything.
+    // If the user cancelled, don't error — they just didn't pick anything.
   });
 }
 
