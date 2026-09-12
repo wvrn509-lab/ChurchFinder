@@ -767,6 +767,50 @@
   implying reach it doesn't have. Keep that note if you restyle the page.
 
   ===== CHANGE LOG (most recent first) =====
+  - PHASE 4 STEP 5 (of the migration blueprint): real file storage for
+    images. Before this, every banner, logo and profile photo was base64
+    TEXT stuffed into a database column (and, before Phase 2, directly
+    into localStorage) — the original storage-quota bug fixed at the very
+    start of this migration was a direct symptom of that, and it never
+    really goes away as long as an image is text in a column instead of a
+    file in real storage.
+    - readImageAsAvatar()/readImageAsBanner() now hand back a real Blob
+      (canvas.toBlob) instead of a base64 data URI (canvas.toDataURL).
+    - uploadImageToStorage(blob, path) is new: uploads to the church-media
+      bucket Phase 2 already created, then returns its public URL. Never
+      throws — callers get back {url} or {error} and stay responsible for
+      failing closed, same as every other real write since Phase 4 started.
+    - The church editor's banner/logo pickers (wireImagePicker) and AC-1's
+      avatar picker (wireProfileEditor) both now upload for real, at
+      churches/<church id>/banner|logo-<timestamp>.jpg and
+      avatars/<profile id>-<timestamp>.jpg respectively — paths chosen so
+      RLS can enforce ownership from the path alone, without a lookup
+      table. Both fail closed with a real on-screen message (including an
+      "Uploading…" state while the request is in flight) and neither ever
+      falls back to storing the image locally on rejection.
+    - BUG FOUND AND FIXED BEFORE SHIPPING: safePhoto() only ever matched
+      the old base64 data-URI shape. The moment uploads started returning
+      real https://…supabase.co/storage/... URLs, EVERY banner/logo/avatar
+      silently stopped rendering — safePhoto() returned null for the new
+      shape, so the element stayed in its "empty" state with no error
+      anywhere. Caught by two failing regression checks, not by
+      inspection. Fixed by adding SAFE_PHOTO_STORAGE_RE, scoped tightly to
+      our own project's church-media bucket, and having safePhoto() accept
+      either shape.
+    - Deliberately deferred: SEED_CHURCHES' own curated demo photos stay
+      exactly as they are (base64, bundled with the app) — they aren't
+      user uploads and migrating them buys nothing.
+    supabase/08_phase4_image_storage.sql adds the missing upload policies
+    for the (already public, already existing) church-media bucket: a
+    church's real claimant can upload/replace under churches/<that church's
+    id>/, and a user can upload/replace under avatars/<their own id>-*.
+    Reads need no policy at all — a public bucket serves its objects over
+    a public URL regardless of RLS.
+    Regression: 5 new checks in /tmp/test_avatar_upload_db.js (a real
+    avatar upload gets a real storage URL and survives a save; a direct
+    attempt to upload into someone ELSE's avatar path is rejected; the
+    same account CAN upload into its own path). All 148 previously-existing
+    checks re-verified passing (153 total).
   - PHASE 4 STEP 4 (of the migration blueprint): real, server-enforced
     events and posts. Before this, every event and update lived in
     localStorage — anyone could post as any church just by editing
@@ -7788,13 +7832,28 @@ async function submitResetComplete(){
 // reasonable thing to do at all in a no-backend build.
 var PROFILE_BIO_MAX = 160;
 var AVATAR_PX = 256;
-// A photo read back out of localStorage is attacker-controllable in principle
-// (anyone can edit their own storage), and it gets interpolated into a style
-// attribute. Anything that isn't a plain base64 image data URI is dropped
-// rather than escaped — there's no legitimate reason for another shape here.
+// A photo read back out of localStorage (or, as of Phase 4 step 5, the
+// database) is attacker-controllable in principle, and it gets interpolated
+// into a style attribute. Anything that isn't ONE of the two legitimate
+// shapes is dropped rather than escaped — there's no legitimate reason for
+// another shape here.
+//   1. A plain base64 image data URI — the pre-Phase-4-step-5 shape, still
+//      valid for anything not yet re-uploaded (SEED_CHURCHES' own curated
+//      photos are never migrated, by design — see vendor/README.md's
+//      sibling note on the church-media bucket in supabase/08_phase4_
+//      image_storage.sql).
+//   2. A real public URL into OUR OWN church-media storage bucket — what
+//      uploadImageToStorage() now returns. Scoped tightly to
+//      https://<project>.supabase.co/storage/v1/object/public/church-media/
+//      rather than accepting any https:// URL, so this can't be used to
+//      reference arbitrary external content as if it were an uploaded photo.
 var SAFE_PHOTO_RE = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/;
+var SAFE_PHOTO_STORAGE_RE = /^https:\/\/[a-z0-9-]+\.supabase\.co\/storage\/v1\/object\/public\/church-media\/[A-Za-z0-9/_.-]+$/;
 function safePhoto(photo){
-  return (typeof photo === 'string' && SAFE_PHOTO_RE.test(photo)) ? photo : null;
+  if(typeof photo !== 'string') return null;
+  if(SAFE_PHOTO_RE.test(photo)) return photo;
+  if(SAFE_PHOTO_STORAGE_RE.test(photo)) return photo;
+  return null;
 }
 function initialsFor(name){
   var parts = String(name || '').trim().split(/\s+/).filter(Boolean);
@@ -7825,6 +7884,35 @@ function avatarHtml(person, size){
 // File -> square data URI, via canvas. Async because both FileReader and image
 // decoding are; every failure path calls back with a human-readable reason
 // rather than throwing, since this runs straight off a file picker.
+// PHASE 4 STEP 5: uploads a processed image to the real church-media bucket
+// and returns its public URL — replaces storing the image as base64 text,
+// which is what the original storage-quota bug (fixed at the very start of
+// this migration) was fundamentally about. `path` must match one of the two
+// conventions storage RLS actually allows (see
+// supabase/08_phase4_image_storage.sql): "churches/<church row id>/..." for
+// a real claimant, or "avatars/<own profile id>-..." for your own avatar —
+// anything else is rejected by the bucket's policies, not just by this
+// function. Returns { url } on success or { error } with a message ready
+// to show, never throws.
+async function uploadImageToStorage(blob, path){
+  if(!supabaseClient) return { error: 'Image storage isn’t available right now.' };
+  try {
+    var upRes = await supabaseClient.storage.from('church-media').upload(path, blob, { upsert: true, contentType: blob.type || 'image/jpeg' });
+    if(upRes.error) return { error: 'Couldn’t upload that image — check your connection and try again.' };
+    var urlRes = supabaseClient.storage.from('church-media').getPublicUrl(path);
+    var url = urlRes.data && urlRes.data.publicUrl;
+    if(!url) return { error: 'Couldn’t upload that image — check your connection and try again.' };
+    return { url: url };
+  } catch(e){
+    return { error: 'Couldn’t upload that image — check your connection and try again.' };
+  }
+}
+// Resizes/crops a picked file down to a square avatar and hands back a JPEG
+// Blob (cb(err, blob)) — the caller uploads it to the right destination
+// (AC-1's own avatar, or EP-1's church logo use different storage paths and
+// permissions, so the upload itself doesn't belong in this shared
+// processing step). Used to call back with a base64 data URI directly; see
+// the PHASE 4 STEP 5 note on uploadImageToStorage() for why that changed.
 function readImageAsAvatar(file, cb){
   if(!file){ cb('No file chosen.'); return; }
   if(!/^image\//.test(file.type || '')){ cb('That file isn’t an image.'); return; }
@@ -7844,7 +7932,10 @@ function readImageAsAvatar(file, cb){
           img, (img.width - side)/2, (img.height - side)/2, side, side,
           0, 0, AVATAR_PX, AVATAR_PX
         );
-        cb(null, canvas.toDataURL('image/jpeg', 0.82));
+        canvas.toBlob(function(blob){
+          if(!blob){ cb('That image couldn’t be processed.'); return; }
+          cb(null, blob);
+        }, 'image/jpeg', 0.82);
       }catch(e){ cb('That image couldn’t be processed.'); }
     };
     img.src = reader.result;
@@ -8231,11 +8322,13 @@ var CHURCH_SOCIALS = [
 ];
 
 // Banner version of readImageAsAvatar() — same pipeline (FileReader -> canvas
-// -> JPEG data URI, every failure path calling back with a readable reason),
-// but a wide centre crop instead of a square one, because it renders into
+// -> JPEG Blob, every failure path calling back with a readable reason), but
+// a wide centre crop instead of a square one, because it renders into
 // .profile-band.has-photo (260px tall, full card width). 1200x400 covers that
 // at background-size:cover on a high-DPI screen without the file getting
-// silly — measured around 60-150KB depending on the photo.
+// silly — measured around 60-150KB depending on the photo. Hands back a
+// Blob, not a data URI — see the PHASE 4 STEP 5 note on
+// uploadImageToStorage() above readImageAsAvatar().
 var BANNER_W = 1200, BANNER_H = 400;
 function readImageAsBanner(file, cb){
   if(!file){ cb('No file chosen.'); return; }
@@ -8260,7 +8353,10 @@ function readImageAsBanner(file, cb){
           img, (srcW - cropW)/2, (srcH - cropH)/2, cropW, cropH,
           0, 0, BANNER_W, BANNER_H
         );
-        cb(null, canvas.toDataURL('image/jpeg', 0.82));
+        canvas.toBlob(function(blob){
+          if(!blob){ cb('That image couldn’t be processed.'); return; }
+          cb(null, blob);
+        }, 'image/jpeg', 0.82);
       }catch(e){ cb('That image couldn’t be processed.'); }
     };
     img.src = reader.result;
@@ -8324,9 +8420,25 @@ function wireProfileEditor(account){
   if(fileInput) fileInput.addEventListener('change', function(){
     // Keep whatever is typed before the re-render below throws the DOM away.
     profileDraft.bio = document.getElementById('pfBio').value;
-    readImageAsAvatar(fileInput.files && fileInput.files[0], function(err, dataUri){
-      if(err){ profileDraft.note = err; profileDraft.noteClass = 'error'; }
-      else { profileDraft.photo = dataUri; profileDraft.note = null; profileDraft.noteClass = ''; }
+    readImageAsAvatar(fileInput.files && fileInput.files[0], async function(err, blob){
+      if(err){ profileDraft.note = err; profileDraft.noteClass = 'error'; renderAccount(); return; }
+      // PHASE 4 STEP 5: upload for real instead of embedding base64 — see
+      // the note on uploadImageToStorage(). Every account created since
+      // Phase 3 has a real supabaseId; an account that somehow doesn't
+      // (shouldn't happen) just can't upload a real photo, same spirit as
+      // every other "no real Supabase identity" fallback this phase.
+      if(!(account.supabaseId && supabaseClient)){
+        profileDraft.note = 'Couldn’t upload — your account isn’t fully set up yet.';
+        profileDraft.noteClass = 'error';
+        renderAccount();
+        return;
+      }
+      profileDraft.note = 'Uploading…'; profileDraft.noteClass = '';
+      renderAccount();
+      var path = 'avatars/' + account.supabaseId + '-' + Date.now() + '.jpg';
+      var res = await uploadImageToStorage(blob, path);
+      if(res.error){ profileDraft.note = res.error; profileDraft.noteClass = 'error'; renderAccount(); return; }
+      profileDraft.photo = res.url; profileDraft.note = null; profileDraft.noteClass = '';
       renderAccount();
     });
   });
@@ -9088,13 +9200,38 @@ function renderEditChurch(){
     if(input) input.addEventListener('change', function(){
       var file = input.files && input.files[0];
       captureChurchEditDraft();
-      reader(file, function(err, dataUri){
+      reader(file, async function(err, blob){
         if(err){
           churchEditNote = err; churchEditNoteClass = 'error';
           renderEditChurch();
           return;
         }
-        churchEditDraft[key] = dataUri;
+        // PHASE 4 STEP 5: upload for real instead of embedding base64 —
+        // requires the real church row id (churches RLS checks claimed_by
+        // against that, not the legacy id) and a real Supabase identity,
+        // which every account created since Phase 3 has. A rejected upload
+        // (a real "you're not this church's verified leader" case, same as
+        // every other write this phase) shows the real reason and leaves
+        // the draft untouched rather than claiming a picked image is ready
+        // to save when it never left this browser.
+        churchEditNote = 'Uploading…'; churchEditNoteClass = '';
+        renderEditChurch();
+        var churchLookup = await supabaseClient.from('churches').select('id').eq('legacy_id', churchId).maybeSingle();
+        var churchRowId = churchLookup.data && churchLookup.data.id;
+        if(!churchRowId){
+          churchEditNote = 'Couldn’t upload — this church has no real record to attach an image to.';
+          churchEditNoteClass = 'error';
+          renderEditChurch();
+          return;
+        }
+        var path = 'churches/' + churchRowId + '/' + key + '-' + Date.now() + '.jpg';
+        var res = await uploadImageToStorage(blob, path);
+        if(res.error){
+          churchEditNote = res.error; churchEditNoteClass = 'error';
+          renderEditChurch();
+          return;
+        }
+        churchEditDraft[key] = res.url;
         churchEditNote = null; churchEditNoteClass = '';
         renderEditChurch();
       });
