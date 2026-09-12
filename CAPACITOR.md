@@ -21,13 +21,16 @@ Everything here is additive packaging, not a rewrite.
   or `www`, this is a real project you'll open and may hand-edit in Xcode
   (icons, entitlements, signing), so it belongs in version control the same
   way the rest of the app does.
-  - `Info.plist` already has the three permission strings the app will need
-    once the camera/geolocation code lands (Step 2+ of this phase) —
-    `NSCameraUsageDescription`, `NSPhotoLibraryUsageDescription`,
-    `NSLocationWhenInUseUsageDescription`. Missing one of these doesn't show
-    an error dialog on a real device — it silently kills the app the instant
-    that feature is touched, so they're in place now rather than added
-    reactively after a crash report.
+  - `Info.plist` has the permission strings the camera/geolocation code
+    needs: `NSCameraUsageDescription`, `NSPhotoLibraryUsageDescription`,
+    `NSPhotoLibraryAddUsageDescription`, `NSLocationWhenInUseUsageDescription`.
+    The first three are easy to under-provision by one: read access
+    (`NSPhotoLibraryUsageDescription`) and *save* access
+    (`NSPhotoLibraryAddUsageDescription`) are two separate keys, and
+    `@capacitor/camera`'s `getPhoto()` wants both even when all you're doing
+    is picking an existing photo, not saving a new one — missing the
+    `Add` key rejects with a message naming exactly which key is missing
+    (caught and logged by `capturePhotoFromCamera()`), not a silent crash.
 - `npm run build` — copies `index.html` and `vendor/` into `www/` (gitignored,
   regenerated every time). Not a real build step — no bundling, no
   transpilation, just what Capacitor's `webDir` needs to point at. The app's

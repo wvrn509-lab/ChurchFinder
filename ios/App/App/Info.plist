@@ -28,6 +28,8 @@
 	<string>ChurchFinder uses your camera so you can add a photo to your church's page or your own profile.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>ChurchFinder needs access to your photos so you can choose a picture for your church's page or your own profile.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>ChurchFinder saves the photo you take so you can use it for your church's page or your own profile.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>ChurchFinder uses your location to find churches near you.</string>
 	<key>UIApplicationSceneManifest</key>
