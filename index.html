@@ -767,6 +767,66 @@
   implying reach it doesn't have. Keep that note if you restyle the page.
 
   ===== CHANGE LOG (most recent first) =====
+  - PHASE 5 STEP 2 (of the migration blueprint): a device discovers EVERY
+    real conversation an account is actually part of, not just ones it
+    already knew about. PHASE 5 STEP 1's own dev note named this gap
+    exactly: keeping an already-known thread live doesn't help a pastor
+    (or attendee) discover one that started on a different device — PI-1
+    and AC-1's "My conversations" still only ever filtered the local
+    THREADS array, which a genuinely new device starts with empty.
+    - syncThreadsFromDB(account), fire-and-forget from renderPastorList()
+      and renderAccount() (both already re-render on every entry, so this
+      needs no one-shot guard — re-running it just tries to add the same
+      rows again, which the per-row dbId check turns into a no-op), lists
+      every real `threads` row where the account is pastor_id OR
+      attendee_id (`.or('pastor_id.eq.<id>,attendee_id.eq.<id>')`,
+      embedding churches(legacy_id, name) for the church side of things)
+      and builds a local thread object for any row not already known,
+      leaving existing ones untouched.
+    - The OTHER participant's name/photo can't come from `profiles`
+      directly — that table's own RLS ("users can view own profile",
+      Phase 3) correctly limits it to auth.uid() = id, which also
+      correctly keeps a conversation partner from reading your live
+      verification codes (personal_code/church_code, still columns on
+      that same row). supabase/09_phase5_thread_partner_info.sql adds a
+      narrow SECURITY DEFINER function, thread_partner_info(thread_id),
+      that verifies the caller is really pastor_id or attendee_id on that
+      specific thread and returns ONLY display_name/photo_url for
+      whoever's on the other side — nothing else on the row, and nothing
+      at all for anyone who isn't really a participant.
+    - A REAL, PRE-EXISTING BUG THIS STEP FOUND AND FIXED, unrelated to the
+      discovery feature itself but found while making thread_partner_info
+      actually useful: AC-1's profile save (pfSave()) never actually sent
+      its Supabase profiles update. It built the query
+      (`supabaseClient.from('profiles').update(...).eq(...)`) but never
+      awaited it or called .then() on it — and supabase-js's query
+      builders are LAZY thenables, so the underlying fetch only fires
+      inside .then()/await. The call was silently constructed and never
+      sent; `profiles.display_name`/`photo_url` were frozen at whatever
+      signup captured, forever, for every account, and nothing anywhere
+      surfaced that as an error because the LOCAL save (what every one of
+      this account's own screens actually reads from) had already fully
+      succeeded either way. Fixed by adding `.then(function(){},
+      function(){})` — fire-and-forget on purpose (a rejection here means
+      a stale name/photo shows up to someone else, not a lost edit, so
+      this deliberately does NOT fail closed like every other real write
+      this phase), but now it actually sends the request.
+    - DELIBERATELY NOT DONE in this step: unread counts and typing
+      presence stay exactly local-only, same as every step so far;
+      `bio` still isn't synced to the database (only display_name/photo_url
+      are, since those are the two fields thread_partner_info exposes —
+      syncing bio too is unrelated to what this step needed).
+    Regression: 6 new checks in /tmp/test_thread_sync_db.js, again across
+    genuinely separate browser contexts for the "new device" case: a
+    pastor's SECOND device (a real Supabase sign-in, no shared storage
+    with the first) discovers a conversation it never had locally, with no
+    duplicate thread created if the sync runs again; opening that
+    discovered thread loads its real messages (Step 1 and Step 2 composing
+    correctly); the other participant sees a NAME CHANGE made after
+    signup, not the stale one, proving the profiles-patch bug fix landed
+    for real; and a real outsider gets back nothing at all from
+    thread_partner_info() for a thread they have no part in. All 160
+    previously-existing checks re-verified passing (166 total).
   - PHASE 5 STEP 1 (of the migration blueprint): live messages in an
     already-open conversation. Phase 4 step 3 made messaging real and
     private, but its own dev note flagged the gap this step closes: a
@@ -6338,6 +6398,57 @@ function myThreadFor(churchId, churchName, pastorName){
   return t;
 }
 
+// PHASE 5 STEP 2: lists every REAL thread this account is actually a
+// participant in, so a conversation started on a different device shows up
+// here even though this device has never heard of it. Closes the gap PHASE
+// 5 STEP 1's own dev note flagged: keeping an already-known thread live
+// (that step) doesn't help discover one that isn't known locally yet (this
+// one). Fire-and-forget, called from renderPastorList() and renderAccount()
+// — both already re-render on every entry (see their own dev notes: "a
+// thread can gain messages mid-session"), so this needs no one-shot guard
+// of its own; running it again just tries to add the same rows a second
+// time, which the per-row dbId check below turns into a no-op.
+async function syncThreadsFromDB(account){
+  if(!account || !account.supabaseId || !supabaseClient) return;
+  var res = await supabaseClient.from('threads')
+    .select('id, pastor_id, attendee_id, churches(legacy_id, name)')
+    .or('pastor_id.eq.' + account.supabaseId + ',attendee_id.eq.' + account.supabaseId);
+  if(res.error || !res.data || !res.data.length) return;
+  var known = {};
+  THREADS.forEach(function(t){ if(t.dbId) known[t.dbId] = true; });
+  var added = false;
+  for(var i = 0; i < res.data.length; i++){
+    var row = res.data[i];
+    if(known[row.id]) continue;
+    known[row.id] = true; // claim it up front — an await below must never let a slow tick re-add the same row
+    var iAmPastor = row.pastor_id === account.supabaseId;
+    // The OTHER participant's name/photo — NOT read off `profiles` directly
+    // (its own RLS correctly limits that table to auth.uid() = id, which
+    // also protects the verification codes still sitting on that same row;
+    // see the SQL migration's own note on why this is a dedicated function
+    // rather than a wider profiles policy).
+    var partnerRes = await supabaseClient.rpc('thread_partner_info', { p_thread_id: row.id });
+    var partner = (partnerRes.data && partnerRes.data[0]) || {};
+    var church = row.churches || {};
+    THREADS.unshift({
+      id: 'TH-db-' + row.id, churchId: church.legacy_id || null, church: church.name || '',
+      who: partner.display_name || (iAmPastor ? 'A visitor' : 'This church'),
+      email: '', ice: '', owner: iAmPastor ? null : account.email, mine: !iAmPastor,
+      unreadPastor: 0, unreadVisitor: 0, messages: [], dbId: row.id
+    });
+    added = true;
+  }
+  if(added){
+    saveThreads();
+    // Re-render whichever list-shaped view is actually showing this data —
+    // matching the same "only write/re-render on real change" discipline
+    // renderChat() already applies, so a call that added nothing never
+    // touches the DOM.
+    if(currentView === 'pastor') renderPastorList();
+    else if(currentView === 'account') renderAccount();
+  }
+}
+
 // WHICH SIDE OF *THIS* THREAD ARE YOU? This is the single source of truth, and
 // it is per-thread, NOT per-account. That distinction is the fix for a real bug:
 // a pastor account clicking "Communicate with Pastor X" on someone else's church
@@ -6362,6 +6473,7 @@ function renderPastorList(){
   var unreadEl = document.getElementById('pastorUnread');
   var account = currentAccount();
   if(!account || account.role !== 'pastor'){ requireAuth('pastor'); return; }
+  syncThreadsFromDB(account); // fire-and-forget; re-renders itself once real data arrives
   // A pastor sees their own church's conversations, not every thread in the
   // browser. This is the whole reason PI-1 needed an account behind it.
   var mine = THREADS.filter(function(t){ return threadBelongsToPastor(t, account); });
@@ -8673,6 +8785,27 @@ function wireProfileEditor(account){
     // No renderAcctPill() here on purpose: the pill is hidden on AC-1 anyway
     // (see its hide list), and setView() rebuilds it on the way out, so a new
     // name or photo is already there by the time the pill is next visible.
+    // PHASE 5 STEP 2: also patch the real profiles row so a conversation
+    // partner on another device (thread_partner_info(), which reads
+    // display_name/photo_url straight off this row) sees the current name
+    // and photo instead of whatever was typed at signup and never updated
+    // since. Deliberately fire-and-forget and best-effort, NOT fail-closed
+    // like every other real write this phase: the local save just above is
+    // this account's own source of truth and has already fully succeeded
+    // either way, so a rejection here only means a stale name/photo shows
+    // up to someone else, not a lost edit.
+    if(account.supabaseId && supabaseClient){
+      // .then() here isn't error handling — it's what actually FIRES the
+      // request. supabase-js query builders are lazy thenables: the
+      // underlying fetch only happens inside .then()/await, so a bare
+      // `.update(...).eq(...)` with neither would silently construct the
+      // request and never send it. (Found by this exact bug shipping
+      // silently in this file — no test would have caught it either,
+      // since the local save this depends on had already fully succeeded.)
+      supabaseClient.from('profiles').update({
+        display_name: account.name, photo_url: safePhoto(account.photo) || null
+      }).eq('id', account.supabaseId).then(function(){}, function(){});
+    }
   });
 }
 
@@ -8749,6 +8882,7 @@ function renderAccount(){
   var body = document.getElementById('accountBody');
   var account = currentAccount();
   if(!account){ requireAuth('account'); return; }
+  syncThreadsFromDB(account); // fire-and-forget; re-renders itself once real data arrives
   var isPastor = account.role === 'pastor';
   var myThreads = THREADS.filter(function(t){
     return isPastor ? threadBelongsToPastor(t, account) : t.owner === account.email;
