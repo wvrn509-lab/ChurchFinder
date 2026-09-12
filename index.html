@@ -8371,8 +8371,13 @@ async function uploadImageToStorage(blob, path){
     if(upRes.error){
       // Logged (not shown to the user) so a real cause — CORS, RLS, network —
       // is visible in the Safari Web Inspector console instead of vanishing
-      // behind the generic message below.
-      console.error('uploadImageToStorage upload error:', upRes.error);
+      // behind the generic message below. An RLS rejection specifically means
+      // auth.uid() didn't match what `path` expects — logging the actual
+      // session (or lack of one) turns "check your session" into a fact
+      // instead of a guess on the next failure.
+      console.error('uploadImageToStorage upload error:', upRes.error, 'path:', path);
+      var sessionRes = await supabaseClient.auth.getSession();
+      console.error('uploadImageToStorage session at failure time:', sessionRes.data && sessionRes.data.session && sessionRes.data.session.user && sessionRes.data.session.user.id, sessionRes.error);
       return { error: 'Couldn’t upload that image — check your connection and try again.' };
     }
     var urlRes = supabaseClient.storage.from('church-media').getPublicUrl(path);
