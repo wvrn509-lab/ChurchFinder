@@ -767,6 +767,79 @@
   implying reach it doesn't have. Keep that note if you restyle the page.
 
   ===== CHANGE LOG (most recent first) =====
+  - PHASE 5 STEP 1 (of the migration blueprint): live messages in an
+    already-open conversation. Phase 4 step 3 made messaging real and
+    private, but its own dev note flagged the gap this step closes: a
+    conversation "only re-syncs from the database when it's freshly
+    opened, not while sitting open" — reopen CV-1 and you'd see a reply,
+    but sitting on the thread while it arrived showed nothing until you
+    left and came back.
+    - Messages now carry their real database id locally (previously only
+      {by, text, when}). syncThreadMessagesFromDB() also caches the
+      thread's real pastor_id/attendee_id on the thread object
+      (t.dbPastorId/t.dbAttendeeId) so the new poll below doesn't have to
+      re-fetch the thread row on every tick.
+    - pollNewChatMessages(t), on a 3-second interval (CHAT_POLL_MS) that
+      runs ONLY while CV-1 is showing that specific thread (started in
+      renderChat(), cleared in setView()'s chat-cleanup when you leave),
+      fetches strictly what's NEW since the last sync/poll
+      (created_at > t.lastSyncedAt) and reconciles by real message id
+      (reconcileNewMessages()) — a message this device already has
+      (including one IT just sent) is silently skipped, so the poll
+      re-noticing your own just-sent row never double-posts it. A
+      genuinely new one is appended to the DOM directly
+      (appendChatBubble()) rather than triggering a full renderChat() —
+      that distinction matters: a full re-render would blow away
+      #chatInput and lose a half-typed draft, exactly the failure mode the
+      TYPING INDICATOR dev note already warns about for a different
+      trigger (writes to THREADS in another tab). sendChatMessage() tags
+      its own optimistic push with the real inserted row's id
+      (.select('id').maybeSingle(), same pattern already used for
+      threads/events/posts) so this reconciliation has something to match
+      against immediately, before the first poll even runs.
+    - DELIBERATELY A POLL, NOT A supabase-js realtime channel subscription.
+      Real Postgres Realtime is a WebSocket (Phoenix-channel protocol)
+      concern; this project's tests are built entirely on Playwright's
+      page.route() HTTP interception, which can't fake a WebSocket
+      handshake deterministically, and the blueprint's own Phase 5
+      write-up already scopes push delivery to depend on Phase 6 (the
+      native shell) regardless. A short poll against the real,
+      RLS-protected REST endpoint is the smallest slice that actually
+      closes the "must reopen to see a reply" gap; a true realtime channel
+      remains a reasonable later upgrade, not a redo, if it's ever wanted.
+    - A REAL, SEPARATE GAP THIS STEP DID NOT CLOSE, found while testing it
+      properly: PI-1 (the pastor inbox list) and AC-1's "My conversations"
+      still only ever show threads already present in THIS device's local
+      THREADS — there is still no "list every real thread I'm a party to"
+      sync from the database, so a pastor signing in on a genuinely new
+      device has no way to discover a conversation exists at all, only to
+      keep one alive once they already know about it (e.g. via a direct
+      #chat-<id> link). Closing that is a bigger, separate step (it also
+      needs a way to resolve the OTHER participant's name/photo across
+      devices, which today comes from local `accounts`, not the database)
+      and is deliberately left for later rather than folded in here.
+    - Also NOT done in this step, same reasoning as every phase so far:
+      typing presence across real devices (still the local-only,
+      same-browser TYPING_KEY mechanism from before) and server-side
+      unread counts (messages.read_at already exists as a column but isn't
+      written or read yet) — both are reasonable candidates for Step 2/3
+      of this phase.
+    Regression: 7 new checks in /tmp/test_chat_live_poll.js, deliberately
+    run across TWO SEPARATE BROWSER CONTEXTS with no shared storage of any
+    kind (not two tabs) — the blueprint's own Phase 5 testing note says
+    "two real devices, not two tabs" for exactly the reason this file's
+    dev notes call out elsewhere: two tabs in one browser already share
+    THREADS via a `storage`-event listener, an older, different mechanism
+    that would make a same-context test pass for the wrong reason. Proves:
+    a device that has never had a conversation locally sees it via the
+    initial sync; a second message sent from a completely different
+    context arrives via the poll alone; a half-typed draft in the
+    composer survives that arrival untouched; no duplicate bubble appears
+    when the poll later re-fetches a message this device already has
+    (including its own just-sent one); and leaving the conversation
+    actually stops the interval (no orphaned timer still writing to the
+    database). All 153 previously-existing checks re-verified passing
+    (160 total).
   - PHASE 4 STEP 5 (of the migration blueprint): real file storage for
     images. Before this, every banner, logo and profile photo was base64
     TEXT stuffed into a database column (and, before Phase 2, directly
@@ -5085,6 +5158,13 @@ function setView(view){
   if(currentView === 'chat' && view !== 'chat' && activeThreadId){
     clearTyping(activeThreadId, myChatRole());
   }
+  // PHASE 5 STEP 1: stop polling for new messages the moment CV-1 isn't the
+  // page on screen — an orphaned interval would keep firing (and keep
+  // writing to THREADS) for a conversation nobody is looking at.
+  if(currentView === 'chat' && view !== 'chat' && chatPollTimer){
+    clearInterval(chatPollTimer);
+    chatPollTimer = null;
+  }
   // Leaving AC-1 abandons a half-finished profile edit, so coming back lands on
   // the profile itself rather than dropping straight into a stale editor.
   if(currentView === 'account' && view !== 'account'){ resetProfileDraft(); acChurchPick = null; acChurchNote = null; }
@@ -6354,19 +6434,118 @@ async function syncThreadMessagesFromDB(t){
   var threadRes = await supabaseClient.from('threads').select('pastor_id, attendee_id').eq('id', t.dbId).maybeSingle();
   var threadRow = threadRes.data;
   if(!threadRow) return;
-  var msgsRes = await supabaseClient.from('messages').select('sender_id, body, created_at').eq('thread_id', t.dbId).order('created_at', { ascending: true });
+  // Cached so PHASE 5 STEP 1's poll (below) can classify sender_id without
+  // re-fetching the thread row on every tick.
+  t.dbPastorId = threadRow.pastor_id;
+  t.dbAttendeeId = threadRow.attendee_id;
+  var msgsRes = await supabaseClient.from('messages').select('id, sender_id, body, created_at').eq('thread_id', t.dbId).order('created_at', { ascending: true });
   if(msgsRes.error || !msgsRes.data) return;
   t.messages = msgsRes.data.map(function(m){
-    return { by: m.sender_id === threadRow.pastor_id ? 'pastor' : 'visitor', text: m.body, when: relativeTimeFrom(m.created_at) };
+    return { id: m.id, by: m.sender_id === threadRow.pastor_id ? 'pastor' : 'visitor', text: m.body, when: relativeTimeFrom(m.created_at) };
   });
+  t.lastSyncedAt = msgsRes.data.length ? msgsRes.data[msgsRes.data.length - 1].created_at : t.lastSyncedAt;
   saveThreads();
   if(activeThreadId === t.id) renderChat();
+}
+// PHASE 5 STEP 1: keeps an OPEN conversation live without needing to leave
+// and reopen it — the gap Phase 4 step 3's own dev note called out
+// ("only re-syncs from the database when it's freshly opened, not while
+// sitting open"). Runs on an interval only while CV-1 is showing this
+// thread (see the setInterval in renderChat() and the clearInterval in
+// setView()'s chat-cleanup below) and fetches strictly what's NEW since
+// the last sync/poll (created_at > t.lastSyncedAt), so a long-running
+// conversation never re-downloads its whole history every tick.
+// DELIBERATELY A POLL, NOT A supabase-js realtime channel subscription:
+// real Postgres Realtime goes over a WebSocket (Phoenix-channel protocol),
+// which this project's test mocks (built entirely on Playwright's
+// page.route() HTTP interception) can't fake deterministically — and the
+// blueprint's own Phase 5 write-up already flags push delivery as
+// depending on Phase 6 (the native shell) anyway. A short poll against the
+// real, RLS-protected REST endpoint is the smallest slice that actually
+// closes the "must reopen the thread to see a reply" gap; a true realtime
+// channel is a reasonable later upgrade, not a redo, if it's ever wanted.
+var CHAT_POLL_MS = 3000;
+var chatPollTimer = null;
+function reconcileNewMessages(t, rows){
+  var known = {};
+  t.messages.forEach(function(m){ if(m.id) known[m.id] = true; });
+  var added = false;
+  rows.forEach(function(m){
+    if(known[m.id]) return; // already have it — e.g. our own optimistic push
+    var msg = { id: m.id, by: m.sender_id === t.dbPastorId ? 'pastor' : 'visitor', text: m.body, when: relativeTimeFrom(m.created_at) };
+    t.messages.push(msg);
+    known[m.id] = true;
+    added = true;
+    if(activeThreadId === t.id) appendChatBubble(t, msg);
+  });
+  return added;
+}
+async function pollNewChatMessages(t){
+  if(!t.dbId || !supabaseClient || !t.dbPastorId) return;
+  var q = supabaseClient.from('messages').select('id, sender_id, body, created_at').eq('thread_id', t.dbId).order('created_at', { ascending: true });
+  if(t.lastSyncedAt) q = q.gt('created_at', t.lastSyncedAt);
+  var res = await q;
+  if(res.error || !res.data || !res.data.length) return;
+  var added = reconcileNewMessages(t, res.data);
+  t.lastSyncedAt = res.data[res.data.length - 1].created_at;
+  if(added){
+    saveThreads();
+    // A reply landing while you're already looking at the thread should not
+    // still read as unread once you leave — same "opening it clears it" rule
+    // renderChat() already applies, just re-asserted here since a poll (unlike
+    // a full renderChat()) doesn't run that logic on its own.
+    if(activeThreadId === t.id){
+      var iAmPastor = window.currentRole === 'pastor';
+      if(iAmPastor){ if(t.unreadPastor){ t.unreadPastor = 0; saveThreads(); } }
+      else { if(t.unreadVisitor){ t.unreadVisitor = 0; saveThreads(); } }
+    }
+  }
+}
+// Shared by renderChat()'s full log build and pollNewChatMessages()'s
+// single-bubble append, so a message looks identical whichever path drew it.
+function chatBubbleHtml(m, ctx){
+  var mine = (m.by === 'pastor') === ctx.iAmPastor;
+  var label = mine ? 'You' : (m.by==='pastor' ? 'Pastor '+ctx.pastorPlainName : ctx.who);
+  return '<div class="chat-bubble-row '+(mine?'mine':'theirs')+'">'+
+    avatarHtml(mine ? ctx.mePerson : ctx.themPerson, 'sm')+
+    '<div class="chat-bubble '+(mine?'mine':'theirs')+'">'+escapeHtml(m.text)+
+    '<div class="chat-meta">'+escapeHtml(label)+' &middot; '+escapeHtml(m.when)+'</div></div>'+
+  '</div>';
+}
+// Appends ONE new message to the already-open chat log without touching
+// anything else in the DOM — critically, without rebuilding #chatInput, so
+// a reply arriving mid-poll never wipes a half-typed draft (the exact
+// failure mode the TYPING INDICATOR dev note already warns about for full
+// re-renders). Replaces the "Nothing here yet."/empty-state paragraph on
+// the first message, same as a real conversation starting.
+function appendChatBubble(t, m){
+  var logEl = document.getElementById('chatLog');
+  if(!logEl || !t._chatCtx) return;
+  var empty = logEl.querySelector('.chat-empty');
+  if(empty) empty.remove();
+  var typingNode = document.getElementById('chatTyping');
+  var wrap = document.createElement('div');
+  wrap.innerHTML = chatBubbleHtml(m, t._chatCtx);
+  if(typingNode) logEl.insertBefore(wrap.firstChild, typingNode);
+  else logEl.appendChild(wrap.firstChild);
+  logEl.scrollTop = logEl.scrollHeight;
 }
 function renderChat(){
   var t = threadById(activeThreadId);
   var bodyEl = document.getElementById('chatBody');
   if(!t){ location.hash = 'attendee'; return; }
   syncThreadMessagesFromDB(t); // fire-and-forget; re-renders itself once real data arrives
+  // PHASE 5 STEP 1: keep polling for as long as THIS thread stays open —
+  // restarting the interval on every render (rather than guarding it with
+  // "only if not already running") is deliberate and harmless: it just
+  // resets the countdown, and every render already scopes this to `t`
+  // (see the setInterval body's own activeThreadId re-check, since which
+  // thread is open can change without leaving the 'chat' view entirely).
+  if(chatPollTimer) clearInterval(chatPollTimer);
+  chatPollTimer = setInterval(function(){
+    var live = threadById(activeThreadId);
+    if(live && live.id === t.id) pollNewChatMessages(t);
+  }, CHAT_POLL_MS);
 
   // Which side you are is a property of THIS thread, not of your account — see
   // roleInThread(). A pastor messaging another church is a visitor there.
@@ -6405,16 +6584,14 @@ function renderChat(){
         '<div class="chat-sub">'+escapeHtml(t.church)+'</div>'+
       '</div></div>';
 
+  // PHASE 5 STEP 1: stashed on the thread so pollNewChatMessages()'s
+  // appendChatBubble() calls (which run on a timer, well after this
+  // function returns) can build a bubble that matches this render exactly,
+  // without recomputing avatars/names from scratch on every tick.
+  t._chatCtx = { iAmPastor: iAmPastor, mePerson: mePerson, themPerson: themPerson, pastorPlainName: pastorPlainName, who: t.who };
+
   var log = t.messages.length
-    ? t.messages.map(function(m){
-        var mine = (m.by === 'pastor') === iAmPastor;
-        var label = mine ? 'You' : (m.by==='pastor' ? 'Pastor '+pastorPlainName : t.who);
-        return '<div class="chat-bubble-row '+(mine?'mine':'theirs')+'">'+
-          avatarHtml(mine ? mePerson : themPerson, 'sm')+
-          '<div class="chat-bubble '+(mine?'mine':'theirs')+'">'+escapeHtml(m.text)+
-          '<div class="chat-meta">'+escapeHtml(label)+' &middot; '+escapeHtml(m.when)+'</div></div>'+
-        '</div>';
-      }).join('')
+    ? t.messages.map(function(m){ return chatBubbleHtml(m, t._chatCtx); }).join('')
     : '<p class="chat-empty">'+(iAmPastor
         ? 'Nothing here yet.'
         : 'No messages yet. Say hello \u2014 a question about service times or what to expect is a perfectly good place to start.')+'</p>';
@@ -6530,17 +6707,25 @@ async function sendChatMessage(){
   // no real claimant) keep the exact local-only behavior from before this
   // step.
   var account = currentAccount();
+  var newMsg = { by: iAmPastor ? 'pastor' : 'visitor', text: text, when: 'Just now' };
   if(t.dbId && account && account.supabaseId && supabaseClient){
     var msgRes = await supabaseClient.from('messages').insert({
       thread_id: t.dbId, sender_id: account.supabaseId, body: text
-    });
+    }).select('id').maybeSingle();
     if(msgRes.error){
       note.textContent = 'Couldn\u2019t send \u2014 check your connection and try again.';
       note.className = 'chat-note error';
       return;
     }
+    // PHASE 5 STEP 1: tag the id back onto the message we're about to push
+    // locally, so pollNewChatMessages() recognizes it as already-known
+    // (reconcileNewMessages() dedupes by id) instead of appending a second,
+    // duplicate bubble for the same send once the poll notices this row \u2014
+    // exactly the "optimistic render + realtime" double-post the migration
+    // blueprint calls out for this phase.
+    if(msgRes.data){ newMsg.id = msgRes.data.id; }
   }
-  t.messages.push({ by: iAmPastor ? 'pastor' : 'visitor', text: text, when: 'Just now' });
+  t.messages.push(newMsg);
   // Mark unread for the OTHER side — that's what makes the reply visible as new
   // when you flip roles.
   if(iAmPastor) t.unreadVisitor++; else t.unreadPastor++;
