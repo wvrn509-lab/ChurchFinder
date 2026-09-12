@@ -342,12 +342,15 @@
       church, church-affiliation status (pastors), conversation count, sign out.
     - PR-1 (#forgot, #resetWrap): self-service forgot-password. See dev note
       PR-1: FORGOT PASSWORD below.
-  Plus .acct-pill, a fixed top-right button rendered by renderAcctPill(view):
-  "Sign in" when signed out, the account name when signed in. Hidden on IC-1
-  (the icebreaker should be alone on screen) and on the auth/verify/account/
-  admin/reset pages themselves.
+  PHASE 6 DESIGN PASS replaced the old scattered top-right/left floating
+  buttons (acct-pill, home-btn, search-btn, SR-1's left-edge quick actions)
+  with one persistent bottom tab bar (#tabBar: Discover/Messages/Post/
+  Account), rendered/shown via updateTabBar(view) — see tabBarVisibleFor()
+  for exactly which views hide it (the true onboarding/auth screens: IC-1,
+  auth, verify, reset). Unlike the old pill, the tab bar stays visible (with
+  its own tab highlighted) while ON that destination, e.g. Account.
   LP-1 also carries a sign-in / create-account line so a returning pastor isn't
-  expected to find the corner pill.
+  expected to find the tab bar's Account tab first.
 
   EMAIL IS NOW REAL, sent via EmailJS (a client-safe email service — its
   "public key" is meant to sit in client code, unlike a normal API secret).
@@ -499,7 +502,7 @@
   job is to reveal the internal page-ID / church-ID chips (#pageIdFixed, .pew-id)
   that are hidden from visitors by default (CSS: both are display:none unless
   <body> carries class admin-on). Reachable ONLY by typing #admin — nothing in the
-  UI links here, and it doesn't appear in the acct-pill or on LP-1.
+  UI links here, and it doesn't appear in the tab bar or on LP-1.
   State lives in TAB_STORE (the same generic per-tab sessionStorage wrapper the
   real session uses) under its own key, cf.admin.v1 — so it's per-tab like a real
   session, but it is NOT the account system: isAdminMode()/setAdminMode() are the
@@ -773,6 +776,19 @@
   implying reach it doesn't have. Keep that note if you restyle the page.
 
   ===== CHANGE LOG (most recent first) =====
+  - PHASE 6 DESIGN PASS: replaced the four independently-floating nav
+    buttons (top-right acct-pill/home-btn/search-btn, left-edge SR-1 quick
+    actions) with one persistent bottom tab bar (Discover/Messages/Post/
+    Account) — the scattered-corner-buttons pattern was the single biggest
+    "feels like a website, not an app" signal (self-documented in the old
+    CSS comment about three buttons crowding a phone). Also added real
+    safe-area support (viewport-fit=cover + env(safe-area-inset-*)) since
+    grepping the file found zero prior uses of it — fixed-position chrome
+    was sitting at a bare `top:14px`/`bottom:16px` with no notch/home-
+    indicator awareness at all. See tabBarVisibleFor()/updateTabBar() (near
+    "the persistent bottom tab bar" comment, search for it) for the current
+    logic; the old renderAcctPill()/refreshSr1QaBadge() functions were
+    renamed/folded into it, not left behind as dead code.
   - PHASE 5 STEP 4 (of the migration blueprint, and the last of this
     phase): typing presence works across real devices. CV-1's typing
     indicator has existed since before this migration, but only within
@@ -2521,7 +2537,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Find a Church — Church Finder</title>
 <!-- Favicon / app icon — user-supplied logo (navy rounded-square, house outline +
      cross), embedded as base64 like the seed church photos below, matching this
@@ -2583,7 +2599,7 @@
     background:var(--ink);
     color:var(--parchment);
     overflow:hidden;
-    padding:64px 24px 48px;
+    padding:calc(64px + env(safe-area-inset-top)) 24px 48px;
   }
   .rose{
     position:absolute;
@@ -3851,82 +3867,45 @@
   .account-btn:hover{ border-color:var(--brass); color:var(--brass); }
   .account-btn.primary{ background:var(--brass); border-color:var(--brass); color:var(--ink); }
   .account-btn.primary:hover{ background:var(--brass-dark); border-color:var(--brass-dark); color:#fff; }
-  /* Persistent top-right account pill — the way in and out of an account from
-     anywhere. Mirrors .page-id-fixed but is clickable. */
-  .acct-pill{
-    position:fixed; top:14px; right:116px; z-index:9998;
-    display:inline-flex; align-items:center; gap:8px;
-    height:34px; padding:0 14px; border-radius:20px; cursor:pointer;
-    background:rgba(10,10,10,0.72); border:1px solid rgba(255,255,255,0.18);
-    color:#F2F0E8; font-family:'Inter',sans-serif; font-size:12.5px; font-weight:600;
-    box-shadow:0 2px 8px rgba(0,0,0,0.25);
+  /* PHASE 6 DESIGN PASS: one persistent bottom tab bar replaces the four
+     independently-floating buttons that used to live here (acct-pill,
+     home-btn, search-btn, sr1-quick-actions) — each had its own hardcoded
+     position:fixed offset chained to the others ("if you add a button here,
+     shift the ones to its left"), and crowded on small phones. A single tab
+     bar is the standard mobile-app nav pattern and is safe-area aware, so it
+     no longer sits under the home indicator on notched devices.
+     body.has-tabbar (toggled by updateTabBar()) reserves the matching space
+     at the bottom of the document so page content never sits under it. */
+  .tab-bar{
+    position:fixed; left:0; right:0; bottom:0; z-index:9999;
+    display:flex;
+    background:rgba(10,10,10,0.92);
+    border-top:1px solid rgba(255,255,255,0.1);
+    padding:6px 4px calc(6px + env(safe-area-inset-bottom));
+    backdrop-filter:blur(12px);
+    -webkit-backdrop-filter:blur(12px);
   }
-  .acct-pill:hover{ border-color:var(--brass); color:var(--brass); }
-  .acct-pill-dot{ width:7px; height:7px; border-radius:50%; background:var(--brass); flex:none; }
-  /* Always-visible home button (top right, left of .acct-pill — .acct-pill's
-     right offset is permanently shifted to 66px above to reserve this
-     button's space unconditionally, rather than a fragile :has() selector).
-     Routes straight to #landing regardless of sign-in state or current page. */
-  .home-btn{
-    position:fixed; top:14px; right:16px; z-index:9999;
-    width:34px; height:34px; border-radius:50%; padding:0;
-    display:inline-flex; align-items:center; justify-content:center;
-    background:rgba(10,10,10,0.72); border:1px solid rgba(255,255,255,0.18);
-    cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,0.25);
+  .tab-btn{
+    flex:1; min-width:0;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:3px; padding:6px 2px; min-height:44px;
+    background:none; border:none; cursor:pointer;
+    color:#8A93AC; font-family:'Inter',sans-serif;
   }
-  .home-btn:hover{ border-color:var(--brass); }
-  .home-btn img{ width:20px; height:20px; display:block; border-radius:4px; }
-  /* Always-visible search button, sitting between the account pill and the
-     home button (see the right-offset chain: home 16px, search 66px, pill
-     116px — if you add another button here, shift the ones to its left). */
-  .search-btn{
-    position:fixed; top:14px; right:66px; z-index:9999;
-    width:34px; height:34px; border-radius:50%; padding:0;
-    display:inline-flex; align-items:center; justify-content:center;
-    background:rgba(10,10,10,0.72); border:1px solid rgba(255,255,255,0.18);
-    cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,0.25);
+  .tab-btn.active{ color:var(--brass); }
+  .tab-icon-wrap{ position:relative; display:inline-flex; }
+  .tab-label{
+    font-size:10.5px; font-weight:600; letter-spacing:0.01em;
+    max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   }
-  .search-btn:hover{ border-color:var(--brass); }
-  /* The three top-right buttons plus a long display name can crowd a phone;
-     the pill already truncates, so just tighten the spacing here. */
-  @media (max-width:520px){
-    .acct-pill{ right:104px; max-width:calc(100vw - 120px); overflow:hidden; white-space:nowrap; }
-    .search-btn{ right:60px; }
-  }
-  /* SR-1 quick-action row (Messages / Post / Profile) — left edge, anchored
-     near the top (like .admin-marker on the right, just below it in z-order)
-     rather than vertically centered on the viewport, so its position never
-     depends on page/content height and can't drift over whatever happens to
-     be scrolled to the middle of the screen. Shown only on the search page
-     (see setView()), which also adds body.qa-on to reserve this column's
-     width in .hero/.results-wrap so page content never sits under it. */
-  .sr1-quick-actions{
-    position:fixed; left:16px; top:60px; z-index:9997;
-    display:flex; flex-direction:column; gap:12px;
-  }
-  .sr1-qa-btn{
-    position:relative;
-    width:44px; height:44px; border-radius:50%; padding:0;
-    display:inline-flex; align-items:center; justify-content:center;
-    background:rgba(10,10,10,0.72); border:1px solid rgba(255,255,255,0.18);
-    cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,0.25);
-  }
-  .sr1-qa-btn:hover{ border-color:var(--brass); }
-  .sr1-qa-badge{
-    position:absolute; top:-3px; right:-3px; min-width:16px; height:16px;
+  .tab-badge{
+    position:absolute; top:-4px; right:-8px; min-width:16px; height:16px;
     padding:0 4px; border-radius:10px;
     background:var(--brass); color:var(--ink);
     font-family:'Inter',sans-serif; font-size:10px; font-weight:700;
     display:flex; align-items:center; justify-content:center;
   }
-  body.qa-on .hero{ padding-left:84px; }
-  body.qa-on .results-wrap{ padding-left:84px; }
-  @media (max-width:760px){
-    .sr1-quick-actions{ left:8px; gap:9px; }
-    .sr1-qa-btn{ width:38px; height:38px; }
-    body.qa-on .hero{ padding-left:60px; }
-    body.qa-on .results-wrap{ padding-left:60px; }
-  }
+  body.has-tabbar{ padding-bottom:calc(58px + env(safe-area-inset-bottom)); }
 
   @media (max-width:760px){
     .gate-choices{ grid-template-columns:1fr; }
@@ -3939,7 +3918,7 @@
 
   .page-id-fixed{
     position:fixed;
-    bottom:16px;
+    bottom:calc(74px + env(safe-area-inset-bottom)); /* clears the tab bar */
     left:16px;
     z-index:9999;
     font-family:'Inter',monospace;
@@ -3962,7 +3941,7 @@
   body.admin-on .pew-id{ display:inline; }
   .admin-marker{
     position:fixed;
-    top:14px;
+    top:calc(14px + env(safe-area-inset-top));
     left:16px;
     z-index:9998;
     display:inline-flex;
@@ -3987,43 +3966,42 @@
 
 <div class="page-id-fixed" id="pageIdFixed">IC-1</div>
 
-<!-- Persistent account pill (top right). Label + destination are set by
-     renderAcctPill(): signed out -> "Sign in" -> #signin; signed in -> the
-     account's display name -> #account. -->
-<button class="acct-pill" id="acctPill" style="display:none;"></button>
-
-<!-- Always-visible home button (top right, left of the account pill).
-     Routes to #landing unconditionally. -->
-<!-- Always-visible search button (top right, between the account pill and
-     the home button). Goes to SR-1 from anywhere. -->
-<button class="search-btn" id="navSearchBtn" title="Search" aria-label="Search">
-  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#F2F0E8" stroke-width="2.2" stroke-linecap="round">
-    <circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/>
-  </svg>
-</button>
-
-<button class="home-btn" id="homeBtn" title="Go back to home page?"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAAYFBMVEXGsBAZJDVZWSqVm6FMVmPf4eARHjYQIEGsnRv03g11bGojJ007RlcfLEEvNy4THzMAAP8/QztfXz95gY0TIToJFzT8/Pz62gEAAAArN0qxpCspMzZudYPq6dhrc3zEyMlMassNAAAAIHRSTlP/of///v/g////CSj/njtAAUAI//7+/v8A/////////9kvG1cAAAE9SURBVHjaxZPJloQgDEWDIopD9UQAh9b//8tOZLKO1Yte9Vt4Ark8iBDwpGFSJgoxRWoaOAfe95Mp6XEsiBGfDPSq5FVtbW0y0Yp+AC/K8r2xpEYWE+FhyGl5cJaZoyADRAOca05/oakZqedICFBh+ZanI7oFEwXFPRk/Dwkg13w0xPANhlwPkGUeGKy6rjqDsIi2JID8jvh7ELRe4j4jzxOAkpanqhCc61KMZCIRcLM21XQCSx60jd1P4HvNc90FMGYe2wvABTDQqVBKvNoCVKSVtgAOquySAFzdk/Kx/gAsQNLO6YV1A+h1kM4qWqTgdoaXZb4A4F8AxYD5FVAg6Lrl+ftZN0DAY+bnNkfdgAc1Dj+uJK3zg0mNQ613IbTTVwduvXffC7kn8U1fmrc/u9v7N5FPibnplPjg3A+eG0yzp9Zy4AAAAABJRU5ErkJggg==" alt=""></button>
-
-<!-- SR-1 quick-action row (Messages / Post / Profile), left edge, visible
-     only while on the search page — see the SR-1 QUICK ACTIONS dev note.
-     Messages uses a dove (the Holy Spirit), kept as the app's consistent
-     messaging icon; Post uses an ichthys (Jesus fish), per explicit request. -->
-<div class="sr1-quick-actions" id="sr1QuickActions" style="display:none;">
-  <button class="sr1-qa-btn" id="sr1QaMessages" title="Messages">
-    <svg width="22" height="22" viewBox="0 0 64 64" fill="#F2F0E8">
-      <g id="sr1DoveIcon"></g>
+<!-- PHASE 6 DESIGN PASS: persistent bottom tab bar — the app's one nav
+     surface, replacing four independently-floating top-right/left buttons
+     (acct-pill, home-btn, search-btn, sr1-quick-actions) that each had their
+     own hardcoded position:fixed offset and crowded on small phones (see the
+     old "three top-right buttons... crowd a phone" note, now moot). Visible
+     on every real app screen; hidden only on true onboarding/auth screens
+     via tabBarVisibleFor(). Safe-area aware (padding-bottom in CSS uses
+     env(safe-area-inset-bottom)) so it clears the home indicator. Active tab
+     + badge + label driven by updateTabBar(view), called from setView(). -->
+<nav class="tab-bar" id="tabBar" style="display:none;">
+  <button class="tab-btn" id="tabDiscover" title="Discover">
+    <svg class="tab-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+      <circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/>
     </svg>
-    <span class="sr1-qa-badge" id="sr1QaBadge" hidden></span>
+    <span class="tab-label">Discover</span>
   </button>
-  <button class="sr1-qa-btn" id="sr1QaPost" title="Post">
-    <svg width="24" height="15" viewBox="0 0 100 60" fill="none" stroke="#F2F0E8" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+  <button class="tab-btn" id="tabMessages" title="Messages">
+    <span class="tab-icon-wrap">
+      <svg class="tab-icon" width="22" height="22" viewBox="0 0 64 64" fill="currentColor">
+        <g id="tabDoveIcon"></g>
+      </svg>
+      <span class="tab-badge" id="tabMsgBadge" hidden></span>
+    </span>
+    <span class="tab-label">Messages</span>
+  </button>
+  <button class="tab-btn" id="tabPost" title="Post">
+    <svg class="tab-icon" width="24" height="15" viewBox="0 0 100 60" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
       <path d="M8,30 Q50,6 88,30 M8,30 Q50,54 88,30 M74,21 L98,12 M74,39 L98,48"/>
     </svg>
+    <span class="tab-label">Post</span>
   </button>
-  <button class="sr1-qa-btn" id="sr1QaProfile" title="Profile">
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="#F2F0E8"><circle cx="12" cy="8" r="4.3"/><path d="M4 21c0-4.4 3.6-7.2 8-7.2s8 2.8 8 7.2z"/></svg>
+  <button class="tab-btn" id="tabAccount" title="Account">
+    <svg class="tab-icon" width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="8" r="4.3"/><path d="M4 21c0-4.4 3.6-7.2 8-7.2s8 2.8 8 7.2z"/></svg>
+    <span class="tab-label" id="tabAccountLabel">Account</span>
   </button>
-</div>
+</nav>
 
 <!-- Admin-mode marker (top-left). Hidden by default; shown only after a
      successful #admin sign-in, toggled by applyAdminVisual(). See dev note
@@ -5392,9 +5370,9 @@ function setView(view){
   if(view==='adminAccounts'){ renderAdminAccounts(); }
   if(view==='post'){ renderPost(); }
   if(view==='editChurch'){ renderEditChurch(); }
-  // The pill is hidden on the auth screens themselves (you're already there) and
-  // on IC-1 (the icebreaker should be the only thing on screen).
-  renderAcctPill(view);
+  // The tab bar is hidden on the auth screens themselves (you're already
+  // there) and on IC-1 (the icebreaker should be the only thing on screen).
+  updateTabBar(view);
   if(view==='quiz'){
     // Render whatever step quiz state is currently on (gate by default, or
     // wherever they left off if they somehow re-enter mid-quiz).
@@ -5403,13 +5381,6 @@ function setView(view){
     else { quizRenderQuestion(); }
   }
   heroSection.style.display = (view==='search' || view==='detail') ? 'block' : 'none';
-  // SR-1 quick actions (Messages/Post/Profile) — the search page specifically,
-  // not the detail page, per explicit request. body.qa-on reserves this
-  // column's width in .hero/.results-wrap (see their CSS) so page content
-  // never sits under the fixed buttons.
-  document.getElementById('sr1QuickActions').style.display = view==='search' ? 'flex' : 'none';
-  document.body.classList.toggle('qa-on', view==='search');
-  if(view==='search') refreshSr1QaBadge();
   // The hero is shared by SR-1 and the detail page; only SR-1 needs this back
   // link, since the detail page has its own "Back to results".
   var heroBack = document.getElementById('searchBackBtn');
@@ -8815,33 +8786,33 @@ var CHURCH_SOCIALS = [
 // uploadImageToStorage() above readImageAsAvatar().
 var BANNER_W = 1200, BANNER_H = 400;
 function readImageAsBanner(file, cb){
-  if(!file){ cb(‘No file chosen.’); return; }
-  if(!/^image\//.test(file.type || ‘’)){ cb(‘That file isn’t an image.’); return; }
-  if(file.size > 12 * 1024 * 1024){ cb(‘That image is too big — pick one under 12 MB.’); return; }
+  if(!file){ cb("No file chosen."); return; }
+  if(!/^image\//.test(file.type || "")){ cb("That file isn’t an image."); return; }
+  if(file.size > 12 * 1024 * 1024){ cb("That image is too big — pick one under 12 MB."); return; }
   var reader = new FileReader();
-  reader.onerror = function(){ cb(‘Couldn’t read that file.’); };
+  reader.onerror = function(){ cb("Couldn’t read that file."); };
   reader.onload = function(){
     var img = new Image();
-    img.onerror = function(){ cb(‘That image couldn’t be opened.’); };
+    img.onerror = function(){ cb("That image couldn’t be opened."); };
     img.onload = function(){
       try{
-        if(!img.width || !img.height){ cb(‘That image looks empty.’); return; }
-        // Centre-crop to the banner’s aspect ratio, then scale to fit.
+        if(!img.width || !img.height){ cb("That image looks empty."); return; }
+        // Centre-crop to the banner's aspect ratio, then scale to fit.
         var targetRatio = BANNER_W / BANNER_H;
         var srcW = img.width, srcH = img.height;
         var cropW = srcW, cropH = srcW / targetRatio;
         if(cropH > srcH){ cropH = srcH; cropW = srcH * targetRatio; }
-        var canvas = document.createElement(‘canvas’);
+        var canvas = document.createElement("canvas");
         canvas.width = BANNER_W; canvas.height = BANNER_H;
-        canvas.getContext(‘2d’).drawImage(
+        canvas.getContext("2d").drawImage(
           img, (srcW - cropW)/2, (srcH - cropH)/2, cropW, cropH,
           0, 0, BANNER_W, BANNER_H
         );
         canvas.toBlob(function(blob){
-          if(!blob){ cb(‘That image couldn’t be processed.’); return; }
+          if(!blob){ cb("That image couldn’t be processed."); return; }
           cb(null, blob);
-        }, ‘image/jpeg’, 0.82);
-      }catch(e){ cb(‘That image couldn’t be processed.’); }
+        }, "image/jpeg", 0.82);
+      }catch(e){ cb("That image couldn’t be processed."); }
     };
     img.src = reader.result;
   };
@@ -8854,28 +8825,28 @@ function readImageAsBanner(file, cb){
 function capturePhotoFromCamera(cb){
   if(!window.Capacitor || !window.Capacitor.isNativePlatform()){
     // Web: use file input fallback.
-    var input = document.createElement(‘input’);
-    input.type = ‘file’;
-    input.accept = ‘image/*’;
-    input.addEventListener(‘change’, function(){
+    var input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.addEventListener("change", function(){
       if(input.files && input.files[0]){
         // Convert File to Blob via FileReader so both paths work uniformly.
         var reader = new FileReader();
-        reader.onerror = function(){ cb(‘Couldn’t read file.’); };
+        reader.onerror = function(){ cb("Couldn’t read file."); };
         reader.onload = function(){
           var blob = new Blob([reader.result], { type: input.files[0].type });
           cb(null, blob);
         };
         reader.readAsArrayBuffer(input.files[0]);
       }else{
-        cb(‘No file chosen.’);
+        cb("No file chosen.");
       }
     });
     input.click();
     return;
   }
   // Native: use Capacitor camera.
-  if(!window.Camera){ cb(‘Camera not available.’); return; }
+  if(!window.Camera){ cb("Camera not available."); return; }
   window.Camera.getPhoto({
     quality: 90,
     allowEditing: false,
@@ -8888,13 +8859,13 @@ function capturePhotoFromCamera(cb){
     for(var i = 0; i < binaryString.length; i++){
       bytes[i] = binaryString.charCodeAt(i);
     }
-    var blob = new Blob([bytes], { type: ‘image/jpeg’ });
+    var blob = new Blob([bytes], { type: "image/jpeg" });
     cb(null, blob);
   }).catch(function(err){
-    if(err && err.message !== ‘User cancelled photos app’){
-      cb(‘Couldn’t capture photo.’);
+    if(err && err.message !== "User cancelled photos app"){
+      cb("Couldn’t capture photo.");
     }
-    // If user cancelled, don’t error — they just didn’t pick anything.
+    // If user cancelled, don't error — they just didn't pick anything.
   });
 }
 
@@ -8947,31 +8918,31 @@ function profileEditorHtml(account){
 // so renderAccount() stays a single innerHTML assignment plus event wiring,
 // matching how every other page in this file is built.
 function wireProfileEditor(account){
-  var pickBtn = document.getElementById(‘pfPickBtn’);
-  if(pickBtn) pickBtn.addEventListener(‘click’, function(){
+  var pickBtn = document.getElementById('pfPickBtn');
+  if(pickBtn) pickBtn.addEventListener('click', function(){
     capturePhotoFromCamera(function(err, blob){
-      if(err){ profileDraft.note = err; profileDraft.noteClass = ‘error’; renderAccount(); return; }
+      if(err){ profileDraft.note = err; profileDraft.noteClass = 'error'; renderAccount(); return; }
       // Keep whatever is typed before the re-render below throws the DOM away.
-      profileDraft.bio = document.getElementById(‘pfBio’).value;
+      profileDraft.bio = document.getElementById('pfBio').value;
       readImageAsAvatar(blob, async function(err, processedBlob){
-        if(err){ profileDraft.note = err; profileDraft.noteClass = ‘error’; renderAccount(); return; }
+        if(err){ profileDraft.note = err; profileDraft.noteClass = 'error'; renderAccount(); return; }
         // PHASE 4 STEP 5: upload for real instead of embedding base64 — see
         // the note on uploadImageToStorage(). Every account created since
-        // Phase 3 has a real supabaseId; an account that somehow doesn’t
-        // (shouldn’t happen) just can’t upload a real photo, same spirit as
+        // Phase 3 has a real supabaseId; an account that somehow doesn't
+        // (shouldn't happen) just can't upload a real photo, same spirit as
         // every other "no real Supabase identity" fallback this phase.
         if(!(account.supabaseId && supabaseClient)){
-          profileDraft.note = ‘Couldn’t upload — your account isn’t fully set up yet.’;
-          profileDraft.noteClass = ‘error’;
+          profileDraft.note = "Couldn’t upload — your account isn’t fully set up yet.";
+          profileDraft.noteClass = 'error';
           renderAccount();
           return;
         }
-        profileDraft.note = ‘Uploading…’; profileDraft.noteClass = ‘’;
+        profileDraft.note = 'Uploading…'; profileDraft.noteClass = '';
         renderAccount();
-        var path = ‘avatars/’ + account.supabaseId + ‘-’ + Date.now() + ‘.jpg’;
+        var path = 'avatars/' + account.supabaseId + '-' + Date.now() + '.jpg';
         var res = await uploadImageToStorage(processedBlob, path);
-        if(res.error){ profileDraft.note = res.error; profileDraft.noteClass = ‘error’; renderAccount(); return; }
-        profileDraft.photo = res.url; profileDraft.note = null; profileDraft.noteClass = ‘’;
+        if(res.error){ profileDraft.note = res.error; profileDraft.noteClass = 'error'; renderAccount(); return; }
+        profileDraft.photo = res.url; profileDraft.note = null; profileDraft.noteClass = '';
         renderAccount();
       });
     });
@@ -9019,9 +8990,9 @@ function wireProfileEditor(account){
     }
     resetProfileDraft();
     renderAccount();
-    // No renderAcctPill() here on purpose: the pill is hidden on AC-1 anyway
-    // (see its hide list), and setView() rebuilds it on the way out, so a new
-    // name or photo is already there by the time the pill is next visible.
+    // No updateTabBar() here on purpose: the tab bar's Account tab just shows
+    // a fixed "Account"/"Sign in" label, not the display name or photo, so a
+    // saved name/photo change doesn't need the tab bar to refresh at all.
     // PHASE 5 STEP 2: also patch the real profiles row so a conversation
     // partner on another device (thread_partner_info(), which reads
     // display_name/photo_url straight off this row) sees the current name
@@ -9804,17 +9775,17 @@ function renderEditChurch(){
 
   function wireImagePicker(inputId, removeId, reader, key){
     var btn = document.getElementById(inputId);
-    if(btn) btn.addEventListener(‘click’, function(){
+    if(btn) btn.addEventListener('click', function(){
       captureChurchEditDraft();
       capturePhotoFromCamera(function(err, blob){
         if(err){
-          churchEditNote = err; churchEditNoteClass = ‘error’;
+          churchEditNote = err; churchEditNoteClass = 'error';
           renderEditChurch();
           return;
         }
         reader(blob, async function(err, processedBlob){
           if(err){
-            churchEditNote = err; churchEditNoteClass = ‘error’;
+            churchEditNote = err; churchEditNoteClass = 'error';
             renderEditChurch();
             return;
           }
@@ -9822,35 +9793,35 @@ function renderEditChurch(){
           // requires the real church row id (churches RLS checks claimed_by
           // against that, not the legacy id) and a real Supabase identity,
           // which every account created since Phase 3 has. A rejected upload
-          // (a real "you’re not this church’s verified leader" case, same as
+          // (a real "you're not this church's verified leader" case, same as
           // every other write this phase) shows the real reason and leaves
           // the draft untouched rather than claiming a picked image is ready
           // to save when it never left this browser.
-          churchEditNote = ‘Uploading…’; churchEditNoteClass = ‘’;
+          churchEditNote = 'Uploading…'; churchEditNoteClass = '';
           renderEditChurch();
-          var churchLookup = await supabaseClient.from(‘churches’).select(‘id’).eq(‘legacy_id’, churchId).maybeSingle();
+          var churchLookup = await supabaseClient.from('churches').select('id').eq('legacy_id', churchId).maybeSingle();
           var churchRowId = churchLookup.data && churchLookup.data.id;
           if(!churchRowId){
-            churchEditNote = ‘Couldn’t upload — this church has no real record to attach an image to.’;
-            churchEditNoteClass = ‘error’;
+            churchEditNote = "Couldn’t upload — this church has no real record to attach an image to.";
+            churchEditNoteClass = 'error';
             renderEditChurch();
             return;
           }
-          var path = ‘churches/’ + churchRowId + ‘/’ + key + ‘-’ + Date.now() + ‘.jpg’;
+          var path = 'churches/' + churchRowId + '/' + key + '-' + Date.now() + '.jpg';
           var res = await uploadImageToStorage(processedBlob, path);
           if(res.error){
-            churchEditNote = res.error; churchEditNoteClass = ‘error’;
+            churchEditNote = res.error; churchEditNoteClass = 'error';
             renderEditChurch();
             return;
           }
           churchEditDraft[key] = res.url;
-          churchEditNote = null; churchEditNoteClass = ‘’;
+          churchEditNote = null; churchEditNoteClass = '';
           renderEditChurch();
         });
       });
     });
     var remove = document.getElementById(removeId);
-    if(remove) remove.addEventListener(‘click’, function(){
+    if(remove) remove.addEventListener('click', function(){
       captureChurchEditDraft();
       churchEditDraft[key] = null;   // null means "remove", vs undefined "unchanged"
       renderEditChurch();
@@ -10347,42 +10318,50 @@ function submitAdminLogin(){
 }
 applyAdminVisual(); // sync <body>'s class + the marker with this tab's stored admin state on load
 
-// ---- the persistent top-right pill ----
-function renderAcctPill(view){
-  var pill = document.getElementById('acctPill');
-  // Hidden where it would be noise or redundant: the icebreaker (IC-1 should be
-  // the only thing on screen) and the auth screens themselves.
-  var hide = (view === 'welcome' || view === 'auth' || view === 'verify' || view === 'account' || view === 'admin' || view === 'adminAccounts' || view === 'reset');
-  if(hide){ pill.style.display = 'none'; return; }
-  var account = currentAccount();
-  pill.style.display = 'inline-flex';
-  // The dot is the signed-in tell for accounts with no photo; one with a photo
-  // shows the photo instead, which reads as "signed in" on its own.
-  pill.innerHTML = account
-    ? (safePhoto(account.photo) ? avatarHtml(account,'sm') : '<span class="acct-pill-dot"></span>')+
-      escapeHtml(account.name)+
-      '<span style="opacity:0.6;font-weight:500;">'+(account.role==='pastor'?'Pastor':'Attendee')+'</span>'
-    : 'Sign in';
+// ---- the persistent bottom tab bar ----
+// PHASE 6 DESIGN PASS: replaces the old top-right acct-pill/home-btn/
+// search-btn plus the left-edge SR-1 quick actions with one nav surface.
+// Hidden on true onboarding/auth screens (same set the old pill hid on,
+// minus 'account'/'admin'/'adminAccounts' — a tab bar should stay visible
+// with its own tab highlighted while you're ON that destination, unlike a
+// single pill whose only job was "get you to account" and so hid there).
+function tabBarVisibleFor(view){
+  return view !== 'welcome' && view !== 'auth' && view !== 'verify' && view !== 'reset' &&
+    view !== 'admin' && view !== 'adminAccounts';
 }
-document.getElementById('acctPill').addEventListener('click', function(){
-  location.hash = currentAccount() ? 'account' : 'signin';
-});
-document.getElementById('homeBtn').addEventListener('click', function(){
-  location.hash = 'landing';
-});
-document.getElementById('navSearchBtn').addEventListener('click', function(){
+function updateTabBar(view){
+  var bar = document.getElementById('tabBar');
+  var visible = tabBarVisibleFor(view);
+  bar.style.display = visible ? 'flex' : 'none';
+  document.body.classList.toggle('has-tabbar', visible);
+  if(!visible) return;
+  var activeId =
+    (view === 'chat' || view === 'pastor') ? 'tabMessages' :
+    (view === 'post') ? 'tabPost' :
+    (view === 'account') ? 'tabAccount' :
+    'tabDiscover';
+  ['tabDiscover','tabMessages','tabPost','tabAccount'].forEach(function(id){
+    document.getElementById(id).classList.toggle('active', id === activeId);
+  });
+  document.getElementById('tabAccountLabel').textContent = currentAccount() ? 'Account' : 'Sign in';
+  refreshTabMsgBadge();
+}
+document.getElementById('tabDiscover').addEventListener('click', function(){
   // SR-1 lives at #attendee. Setting the same hash fires no hashchange, so
   // route directly when we're already there (harmless no-op in practice,
-  // but keeps the button from feeling dead if it's ever clicked on SR-1).
+  // but keeps the tab from feeling dead if it's ever tapped while already on it).
   if(location.hash === '#attendee') routeFromHash();
   else location.hash = 'attendee';
 });
+document.getElementById('tabAccount').addEventListener('click', function(){
+  location.hash = currentAccount() ? 'account' : 'signin';
+});
 
-// ---- SR-1 QUICK ACTIONS (Messages / Post / Profile) ----
-// Per explicit request: quick actions on the search page for messaging,
-// posting, and the signed-in account, with messaging themed as a dove (the
-// Holy Spirit) throughout the app — this is the canonical place that
-// theme lives; reuse buildDoveIcon() rather than duplicating the shape.
+// ---- TAB BAR: Messages / Post (was SR-1 QUICK ACTIONS) ----
+// Per explicit request: quick actions for messaging, posting, and the
+// signed-in account, with messaging themed as a dove (the Holy Spirit)
+// throughout the app — this is the canonical place that theme lives; reuse
+// buildDoveIcon() rather than duplicating the shape.
 // Built once, imperatively (ellipses, not a hand-drawn path — safer to get
 // right and still reads clearly at button size), not re-rendered per view.
 function buildDoveIcon(g){
@@ -10414,10 +10393,10 @@ function buildDoveIcon(g){
   ].forEach(function(shape){ g.appendChild(shape); });
   g.appendChild(poly('50,29 58,31 50,34')); // beak
 }
-buildDoveIcon(document.getElementById('sr1DoveIcon'));
+buildDoveIcon(document.getElementById('tabDoveIcon'));
 
-function refreshSr1QaBadge(){
-  var badge = document.getElementById('sr1QaBadge');
+function refreshTabMsgBadge(){
+  var badge = document.getElementById('tabMsgBadge');
   if(!badge) return;
   var acct = currentAccount();
   if(!acct){ badge.hidden = true; return; }
@@ -10431,7 +10410,7 @@ function refreshSr1QaBadge(){
   badge.textContent = unread;
   badge.hidden = !unread;
 }
-document.getElementById('sr1QaMessages').addEventListener('click', function(){
+document.getElementById('tabMessages').addEventListener('click', function(){
   var acct = currentAccount();
   if(!acct){ requireAuth('pastor'); return; }
   if(acct.role === 'pastor'){ location.hash = 'pastor'; return; }
@@ -10439,8 +10418,7 @@ document.getElementById('sr1QaMessages').addEventListener('click', function(){
   if(myThreads.length){ openThread(myThreads[0].id, 'visitor'); return; }
   location.hash = 'account';
 });
-document.getElementById('sr1QaPost').addEventListener('click', function(){ location.hash = 'post'; });
-document.getElementById('sr1QaProfile').addEventListener('click', function(){ location.hash = 'account'; });
+document.getElementById('tabPost').addEventListener('click', function(){ location.hash = 'post'; });
 document.getElementById('authBackBtn').addEventListener('click', function(){
   // Abandoning sign-in drops the pending destination too, otherwise a later
   // unrelated sign-in would fling them somewhere they've forgotten about.
@@ -10508,7 +10486,7 @@ function refreshThreadsFromStorage(){
   if(currentView === 'chat') renderChat();
   else if(currentView === 'pastor') renderPastorList();
   else if(currentView === 'account') renderAccount();
-  if(currentView === 'search') refreshSr1QaBadge();
+  if(tabBarVisibleFor(currentView)) refreshTabMsgBadge();
 }
 window.addEventListener('storage', function(e){
   if(!e.key || e.key === STORE_KEYS.threads) refreshThreadsFromStorage();
