@@ -4530,6 +4530,21 @@
      depending on a third party's uptime, and lets this file be tested without
      network access. See vendor/README.md for how to update the version. -->
 <script src="vendor/supabase-js.v2.umd.js"></script>
+<!-- PHASE 6: Capacitor's own JS (window.Capacitor with isNativePlatform(),
+     etc.) is injected automatically by the native iOS runtime, so THAT part
+     works without any script tag. But a plugin's JS side — the piece that
+     actually creates window.Capacitor.Plugins.Camera — is NOT auto-injected;
+     it only exists if something loads the plugin's browser bundle. Normal
+     Capacitor projects get this for free from `import { Camera } from
+     '@capacitor/camera'` through a bundler; this file has no bundler, so it
+     has to be two plain script tags instead. @capacitor/camera's bundle
+     references a bare global `capacitorExports` that only @capacitor/core's
+     own bundle defines, so core MUST load first — swapping this order or
+     dropping either script silently leaves Capacitor.Plugins.Camera
+     undefined, which is exactly what "Camera not available." means if you
+     see it. See vendor/README.md for how to update these versions. -->
+<script src="vendor/capacitor-core.v8.js"></script>
+<script src="vendor/capacitor-camera.v8.js"></script>
 <script>
 
 var DENOM_COLORS = {
@@ -8852,13 +8867,19 @@ function capturePhotoFromCamera(cb){
     input.click();
     return;
   }
-  // Native: use Capacitor camera.
-  if(!window.Camera){ cb("Camera not available."); return; }
-  window.Camera.getPhoto({
+  // Native: use Capacitor camera. Capacitor.Plugins.Camera only exists once
+  // vendor/capacitor-core.v8.js + vendor/capacitor-camera.v8.js have both
+  // loaded (see the <script> tags near the top of the file) — there's no
+  // bundler here to pull the plugin in automatically. resultType/source are
+  // passed as the plugin's own literal enum values ('base64'/'PROMPT'),
+  // not read off a global, since those enums aren't exposed as globals either.
+  var Camera = window.Capacitor.Plugins && window.Capacitor.Plugins.Camera;
+  if(!Camera){ cb("Camera not available."); return; }
+  Camera.getPhoto({
     quality: 90,
     allowEditing: false,
-    resultType: window.CameraResultType.Base64,
-    source: window.CameraSource.Prompt
+    resultType: 'base64',
+    source: 'PROMPT'
   }).then(function(image){
     // Convert base64 to blob.
     var binaryString = atob(image.base64String);
