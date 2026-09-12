@@ -532,7 +532,18 @@
      it's a no-op and the real address is used. See PASTOR CHURCH VERIFICATION
      below for why this exists (testing a flow that normally needs access to a
      church's own inbox, using only admin's own).
-  3) ADMIN MASTER LOGIN on AU-1 (#signin): while a tab is in admin mode, typing
+  3) ADMIN MASTER LOGIN on AU-1 (#signin) — REMOVED as of the Phase 3
+     migration-blueprint change log entry "REMOVED THE ADMIN MASTER-LOGIN
+     BACKDOOR": attemptSignIn() no longer has an isMasterLogin branch at all,
+     since real credentials now live in Supabase Auth and a client-side
+     constant can no longer substitute for one, on the public sign-in form or
+     anywhere else. The paragraph below describes the REMOVED behavior,
+     kept for history — do not re-add it. AD-2's "sign in as" (which used to
+     ride this same branch) now calls setSession() directly instead; see
+     adminSignInAs() and the change log entry for why that's still an
+     acceptable scope for a feature already gated behind knowing
+     ADMIN_PASSWORD to reach #admin-accounts in the first place.
+     ORIGINAL TEXT: while a tab is in admin mode, typing
      any existing account's email with ADMIN_PASSWORD (the SAME constant that
      unlocks #admin — reused deliberately rather than adding a second
      credential to remember) signs in as that account without knowing its
@@ -756,6 +767,64 @@
   implying reach it doesn't have. Keep that note if you restyle the page.
 
   ===== CHANGE LOG (most recent first) =====
+  - PHASE 3 STEP 2 (of the migration blueprint): sign-up and sign-in now go
+    through real Supabase Auth instead of the browser-side salted-SHA-256
+    scheme. createAccount() calls supabase.auth.signUp() and inserts a
+    matching profiles row; attemptSignIn() calls
+    supabase.auth.signInWithPassword(). The app's own two-stage email
+    verification (personal-email code, then church-affiliation code, both
+    still sent via EmailJS) is UNCHANGED — this only replaces what checks the
+    password, not the rest of the account flow. See the SUPABASE AUTH dev
+    note on both functions for the shape.
+    SECURITY FIX folded into this step, called out explicitly since the
+    audit flagged it High: REMOVED THE ADMIN MASTER-LOGIN BACKDOOR.
+    attemptSignIn() used to accept ADMIN_PASSWORD (a hardcoded, view-source-
+    readable constant) as a substitute for ANY account's real password, from
+    the PUBLIC sign-in form, whenever the tab happened to be in admin mode.
+    That branch is gone entirely — a hardcoded client-side constant can no
+    longer authenticate as anyone. AD-2's "sign in as" (the one legitimate
+    user of that branch) now calls setSession() directly instead — an
+    acceptable narrowing since reaching AD-2 already requires knowing
+    ADMIN_PASSWORD to get past #admin in the first place, so nothing public
+    gets weaker. The cosmetic AD-1 gate itself (reveal internal IDs, redirect
+    verification emails to a test inbox) is unchanged and still explicitly
+    "NOT REAL SECURITY" per its own dev note — only the part that touched
+    real account credentials was removed.
+    SCOPE CUT, stated plainly rather than left as a silent gap: PR-1 (forgot
+    password) no longer works. completePasswordReset() still validates the
+    emailed code and the new password's strength exactly as before, then
+    returns an honest "being upgraded, contact support" error instead of
+    writing to a local salt/hash that attemptSignIn() no longer reads (that
+    would have been a WORSE silent break: a "successful" reset whose new
+    password could never actually sign in). Properly fixing this needs
+    either Supabase's own resetPasswordForEmail() link-based flow (a real UX
+    change: a link + redirect callback, not a typed code) or a server-side
+    admin API call (Phase 8 territory) — both are follow-up work, not part
+    of this step. See the PASSWORD RESET IS PAUSED note on
+    completePasswordReset() for the full reasoning.
+    DEPLOYMENT ORDER MATTERS: this step requires supabase/03_phase3_auth.sql
+    to have been run (adds profiles.personal_verified/personal_code/
+    church_code and the "auth.uid() = id" self-access policies Phase 2 left
+    unset) AND "Confirm email" turned OFF in the Supabase project's Auth
+    settings (Authentication -> Sign In / Providers -> Email), so signUp()
+    returns a usable session immediately instead of requiring Supabase's own
+    email-confirmation step on top of this app's own. Do not merge this to
+    main/deploy until both are done — signup will otherwise fail for real
+    visitors with "saving your profile failed."
+    Regression: 11 new checks in /tmp/test_supabase_auth.js (sign-up creates
+    a real Supabase user, a Supabase-side signup error surfaces instead of
+    hanging, right/wrong password both behave correctly, the master-login
+    backdoor is confirmed gone even in admin mode, forgot-password's honest
+    message), all against a mocked Supabase/PostgREST backend for
+    deterministic, network-independent results.
+    SANDBOX NOTE, not an app bug: while chasing test flakiness, confirmed
+    this dev sandbox's network proxy can crash Chromium's renderer mid-
+    navigation when a real (unmocked) request to an allowlisted external
+    host (jsDelivr, Supabase) gets reset mid-handshake — happens only in
+    this test environment's proxy, not for real users. Every test file
+    written from here on should block all non-localhost network traffic and
+    mock what it needs (see test_supabase_auth.js's mockSupabase() for the
+    pattern) rather than letting real external requests through.
   - PHASE 3 STEP 1 (of the migration blueprint): wired up the Supabase
     client, nothing else. supabaseClient is now a real, connected client
     (created from SUPABASE_URL/SUPABASE_ANON_KEY, same trust model as
@@ -6400,6 +6469,12 @@ function validEmail(email){
 }
 // Salted SHA-256 via SubtleCrypto where available. See the honesty note above:
 // this keeps plaintext off disk, it does not make client-side auth secure.
+// UNUSED as of Phase 3 — createAccount()/attemptSignIn()/completePasswordReset()
+// no longer call makeSalt()/hashPassword() at all; the real credential lives in
+// Supabase Auth now (see the SUPABASE AUTH dev note on attemptSignIn()). Left
+// in place rather than deleted since nothing about removing it is required for
+// Phase 3 to work, and it's a reasonable reference for anyone reading the
+// change log's account of what this app's auth looked like before.
 function makeSalt(){
   var bytes = new Uint8Array(16);
   if(window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(bytes);
@@ -6595,6 +6670,17 @@ function passwordStrengthError(pw){
 }
 
 // ---- sign up / sign in ----
+// Turns a Supabase Auth error into the same short, non-technical string this
+// file already shows for every other auth failure. Deliberately generic for
+// anything unexpected — never echoes raw Postgres/GoTrue error text at a
+// visitor, same spirit as attemptSignIn()'s "don't tell a stranger which
+// emails have accounts" rule.
+function describeSupabaseAuthError(err){
+  var msg = (err && err.message) || '';
+  if(/already registered|already exists/i.test(msg)) return 'An account already exists for that email. Try signing in.';
+  if(/password/i.test(msg) && /short|weak|least/i.test(msg)) return 'Please choose a stronger password.';
+  return 'Something went wrong creating your account. Check your connection and try again.';
+}
 async function createAccount(fields){
   var email = normalizeEmail(fields.email);
   if(!validEmail(email)) return { ok:false, error:'That doesn\u2019t look like a valid email address.' };
@@ -6604,17 +6690,52 @@ async function createAccount(fields){
   if(pwErr) return { ok:false, error: pwErr };
   if(fields.password !== fields.confirm) return { ok:false, error:'The two passwords don\u2019t match.' };
   if(findAccount(email)) return { ok:false, error:'An account already exists for that email. Try signing in.' };
-  var salt = makeSalt();
+
+  // SUPABASE AUTH (Phase 3): the real credential now lives in Supabase Auth,
+  // checked and hashed server-side — this replaces the salted-SHA-256 scheme
+  // that used to sit in the same browser as the password it "protected" (see
+  // the dev note just above hashPassword(), now unused by this function).
+  // Requires "Confirm email" to be OFF in the Supabase project's Auth
+  // settings: this app keeps its OWN two-stage code verification below
+  // rather than Supabase's email-link flow, and needs the session signUp()
+  // returns immediately in order to write the matching profiles row under
+  // that table's "auth.uid() = id" policy (see supabase/03_phase3_auth.sql).
+  var signUpRes = await supabaseClient.auth.signUp({ email: email, password: fields.password });
+  if(signUpRes.error) return { ok:false, error: describeSupabaseAuthError(signUpRes.error) };
+  var authUser = signUpRes.data && signUpRes.data.user;
+  if(!authUser) return { ok:false, error:'Something went wrong creating your account. Try again in a moment.' };
+
+  var role = fields.role === 'pastor' ? 'pastor' : 'attendee';
+  var churchRowId = null;
+  if(fields.churchId){
+    var churchLookup = await supabaseClient.from('churches').select('id').eq('legacy_id', fields.churchId).maybeSingle();
+    churchRowId = (churchLookup.data && churchLookup.data.id) || null;
+  }
+  var profileRes = await supabaseClient.from('profiles').insert({
+    id: authUser.id, email: email, role: role, display_name: fields.name.trim(), church_id: churchRowId
+  });
+  if(profileRes.error){
+    // The Supabase Auth user now exists without a profiles row. Surfacing
+    // this clearly is better than silently proceeding: every other screen
+    // that reads a profile would otherwise hit a confusing missing-row error
+    // later instead of a clear one now.
+    return { ok:false, error:'Your account was created, but saving your profile failed (' + profileRes.error.message + '). Please try again or contact support.' };
+  }
+
+  // The local mirror this whole app still reads synchronously everywhere
+  // else (AC-1, AD-2, PI-1, church claiming, etc.) — full migration of those
+  // reads to the database is later blueprint work (Phase 4). supabaseId
+  // links this row back to the real auth user for the functions above that
+  // now need it (attemptSignIn, and eventually the rest).
   var account = {
     email: email,
     acctId: makeAcctId(loadAccounts()),
+    supabaseId: authUser.id,
     name: fields.name.trim(),
-    role: fields.role === 'pastor' ? 'pastor' : 'attendee',
+    role: role,
     churchId: fields.churchId || null,
     churchName: fields.churchName || null,
     pastorName: fields.pastorName || null,
-    salt: salt,
-    hash: await hashPassword(fields.password, salt),
     verified: false,
     code: null,
     // Church-affiliation verification (see PASTOR CHURCH VERIFICATION dev
@@ -6632,26 +6753,24 @@ async function createAccount(fields){
   return { ok:true, account: account };
 }
 async function attemptSignIn(email, password){
+  email = normalizeEmail(email);
   var account = findAccount(email);
   // Deliberately the same message whether the email is unknown or the password
   // is wrong — no need to tell a stranger which emails have accounts.
   var generic = { ok:false, error:'That email and password don\u2019t match an account.' };
   if(!account) return generic;
-  // ADMIN MASTER LOGIN — only when THIS TAB is in admin mode. Typing any
-  // existing account's email with ADMIN_PASSWORD (the same one that unlocks
-  // #admin, reused rather than adding a second credential to remember) signs
-  // in as that account without knowing its real password. Gated on BOTH
-  // isAdminMode() and the password match, so a normal visitor who somehow
-  // guessed ADMIN_PASSWORD still can't use it here without also being signed
-  // into #admin in that same tab. Only substitutes for "prove you know the
-  // password" — still falls through to the unverified-account check right
-  // below, so email/church verification isn't skipped; admin ends up exactly
-  // where a real sign-in would, which is the point (testing the real flow).
-  var isMasterLogin = isAdminMode() && password === ADMIN_PASSWORD;
-  if(!isMasterLogin){
-    var hash = await hashPassword(password, account.salt);
-    if(hash !== account.hash) return generic;
-  }
+  // SUPABASE AUTH (Phase 3): the real credential check happens server-side
+  // now — this replaces the salted-SHA-256 compare this function used to do
+  // itself. The admin master-login backdoor that used to live here
+  // (isMasterLogin = isAdminMode() && password === ADMIN_PASSWORD) is GONE:
+  // a hardcoded client-side constant can no longer substitute for a real
+  // password check anywhere, including from this public sign-in form, which
+  // is exactly the audit finding this closes. See the ADMIN MASTER LOGIN
+  // dev note (search for that phrase) for what used to be here and why
+  // AD-2's "sign in as" (the one legitimate user of that branch) doesn't
+  // need it any more either.
+  var signInRes = await supabaseClient.auth.signInWithPassword({ email: email, password: password });
+  if(signInRes.error) return generic;
   if(!account.verified){
     return { ok:false, unverified:true, account:account, error:'Confirm your email first — we\u2019ll take you there.' };
   }
@@ -6685,9 +6804,32 @@ function sendPasswordResetEmail(account){
     code: account.resetCode.value
   });
 }
-// Validates the code AND the new password, and — only if both pass — writes
-// the new salt/hash and clears resetCode. Async because hashPassword() is.
-// Returns {ok:false, error} same shape as the rest of this file's checks.
+// Validates the code AND the new password — same checks as before Phase 3 —
+// but does NOT write a new password anywhere any more. See the PASSWORD
+// RESET IS PAUSED note just below for why, and what has to exist before this
+// can actually change anything again.
+//
+// ===== PASSWORD RESET IS PAUSED (Phase 3) =====
+// Before Phase 3, this function wrote a new salt/hash into the local account
+// mirror, and attemptSignIn() checked passwords against that same mirror —
+// so "reset" and "sign in" always agreed. Now that attemptSignIn() checks
+// the REAL password against Supabase Auth (see the SUPABASE AUTH dev note
+// above it), writing to the local mirror here would do nothing useful: a
+// visitor could "reset" their password, see success, and then fail to sign
+// in with it, because the account Supabase actually checks was never
+// touched. That is worse than the honest failure below.
+// The reason this can't just be swapped for a Supabase call: every other
+// credential change in this file now goes through supabase.auth (signUp,
+// signInWithPassword), which requires either an active session
+// (auth.updateUser() — not available here; this flow exists FOR people who
+// are signed out and don't remember their password) or Supabase's own
+// resetPasswordForEmail() flow, which emails a recovery LINK through
+// Supabase's own mailer, not a typed code through EmailJS — a real change to
+// this page's UX (a link + redirect callback instead of a code field), not a
+// drop-in swap. That redesign is follow-up work, not part of this step.
+// Nothing about this is a silent regression: the code-entry and
+// password-strength checks below still run exactly as before, so a visitor
+// only ever sees the honest message once they've done everything right.
 async function completePasswordReset(account, entered, newPassword, confirm){
   if(!account.resetCode) return { ok:false, error:'No code has been sent yet. Tap resend below.' };
   if(Date.now() > account.resetCode.expires) return { ok:false, error:'That code has expired — tap resend for a new one.' };
@@ -6695,12 +6837,7 @@ async function completePasswordReset(account, entered, newPassword, confirm){
   var pwErr = passwordStrengthError(newPassword);
   if(pwErr) return { ok:false, error: pwErr };
   if(newPassword !== confirm) return { ok:false, error:'The two passwords don\u2019t match.' };
-  var salt = makeSalt();
-  account.salt = salt;
-  account.hash = await hashPassword(newPassword, salt);
-  account.resetCode = null;
-  upsertAccount(account);
-  return { ok:true };
+  return { ok:false, error:'Password reset is being upgraded to work with our new, more secure login system and isn\u2019t available for a moment. Please contact support to reset your password in the meantime.' };
 }
 
 
@@ -6825,8 +6962,12 @@ function renderAuth(){
       '<button class="auth-submit" id="auSubmit">Sign in</button>'+
       '<p class="auth-note" id="auNote"></p>'+
       '<div class="auth-alt">No account yet? <button class="auth-linkbtn" id="auGoSignup">Create one</button></div>'+
-      '<div class="auth-alt"><button class="auth-linkbtn" id="auGoForgot">Forgot password?</button></div>'+
-      (isAdminMode() ? '<p class="auth-hint" style="margin-top:14px;">Admin mode: enter any account’s email with your admin password to sign in as that account.</p>' : '');
+      '<div class="auth-alt"><button class="auth-linkbtn" id="auGoForgot">Forgot password?</button></div>';
+      // The admin-master-login hint that used to render here (isAdminMode()
+      // ? '...enter any account's email with your admin password...' : '')
+      // is gone along with the feature it described — see the SUPABASE AUTH
+      // dev note on attemptSignIn(). Nothing replaces it: this form has no
+      // admin-only behavior any more, which is the point.
   }
   if(!STORE.persistent){
     html += '<p class="auth-hint" style="margin-top:14px;">Heads up: this browser is blocking local storage, so an account made here won\u2019t survive a reload.</p>';
@@ -8673,26 +8814,31 @@ function renderAdmin(){
 // collapse the panel or swallow the confirmation mid-use.
 var adminAcctOpen = null;
 var adminAcctNote = null;
-// Signs this tab in as another account. Deliberately goes through
-// attemptSignIn() with ADMIN_PASSWORD — the master-login path — rather than
-// calling setSession() directly, so the SAME rules apply: an unverified
-// account still lands on VF-1 exactly as a real sign-in would, instead of
-// admin quietly teleporting past a gate the real flow enforces.
+// Signs this tab in as another account. Used to go through attemptSignIn()
+// with ADMIN_PASSWORD (the master-login path) — that branch is GONE as of
+// Phase 3 (see the SUPABASE AUTH dev note on attemptSignIn()): a hardcoded
+// constant can no longer substitute for a real Supabase password anywhere,
+// including here. This calls setSession() directly instead, skipping the
+// real credential check entirely — an acceptable scope for a convenience
+// feature that was already only reachable by knowing ADMIN_PASSWORD to get
+// past #admin and into #admin-accounts in the first place; nothing public
+// gets weaker. Still replicates attemptSignIn()'s unverified-account
+// handling by hand, so an unverified account lands on VF-1 exactly as a real
+// sign-in would, instead of admin quietly teleporting past a gate the real
+// flow enforces.
 function adminSignInAs(account){
-  attemptSignIn(account.email, ADMIN_PASSWORD).then(function(res){
-    if(res.unverified){
-      // attemptSignIn() does NOT create a session for an unverified account, so
-      // without this the tab would sit on VF-1 for one person while still
-      // signed in as whoever it was before — two identities at once. Drop the
-      // old one; submitVerifyEmail() establishes the right session on success.
-      signOut();
-      startVerifyFlow(res.account.email);
-      location.hash = 'verify';
-      return;
-    }
-    if(!res.ok) return;
-    location.hash = res.account.role === 'pastor' ? 'pastor' : 'attendee';
-  });
+  if(!account.verified){
+    // setSession() is not called for an unverified account, so without this
+    // the tab would sit on VF-1 for one person while still signed in as
+    // whoever it was before — two identities at once. Drop the old one;
+    // submitVerifyEmail() establishes the right session on success.
+    signOut();
+    startVerifyFlow(account.email);
+    location.hash = 'verify';
+    return;
+  }
+  setSession(account);
+  location.hash = account.role === 'pastor' ? 'pastor' : 'attendee';
 }
 // Stamps an account as confirmed without a code. For a pastor this covers BOTH
 // gates, since the church-affiliation code is the one an admin usually can't
