@@ -767,6 +767,49 @@
   implying reach it doesn't have. Keep that note if you restyle the page.
 
   ===== CHANGE LOG (most recent first) =====
+  - PHASE 5 STEP 4 (of the migration blueprint, and the last of this
+    phase): typing presence works across real devices. CV-1's typing
+    indicator has existed since before this migration, but only within
+    ONE browser — markTyping()/clearTyping() wrote to a localStorage key
+    (cf.typing.v1, see the TYPING INDICATOR dev note above), which a
+    genuinely different device never saw at all.
+    - supabase/11_phase5_typing_presence.sql adds one small table,
+      typing_status (thread_id, user_id, updated_at), primary keyed on
+      the pair — one row per person per conversation, a heartbeat, not a
+      message log. RLS lets a participant read either side's row for
+      their own thread, but write or delete only their own.
+    - markTyping() now ALSO upserts a real row (same TYPING_PING_MS
+      throttle it already had, so still at most one request per that long,
+      not one per keystroke) and clearTyping() deletes it — both
+      fire-and-forget, both using `.then(function(){}, function(){})` to
+      actually fire the request (see Step 2/3's dev notes on why a bare
+      `.upsert()`/`.delete()` with neither await nor .then() silently never
+      sends anything at all).
+    - pollTypingStatus(t, account), riding the SAME CHAT_POLL_MS tick
+      pollNewChatMessages() (Step 1) already runs on — not a separate timer,
+      since a typing signal is only ever useful while that exact poll's
+      thread is open — checks whether the OTHER participant's real row is
+      fresher than TYPING_TTL_MS and, if so, writes the EXACT SAME local
+      TYPING_KEY entry the same-browser mechanism already used. That one
+      choice means refreshTypingUI() and otherSideTyping() — the entire
+      rendering side of the original feature — needed ZERO changes; they
+      simply can't tell whether a local-storage entry came from another
+      tab or from this poll.
+    - HONEST ABOUT THE LATENCY: this is visibly slower than the same-tab
+      case, which is instant. A real device won't see "typing…" until the
+      next CHAT_POLL_MS tick after the other side's next TYPING_PING_MS
+      heartbeat — same trade-off Step 1 made choosing a poll over a real
+      Postgres Realtime (WebSocket) channel, for the same reason: this
+      project's tests are built on Playwright's HTTP-level route
+      interception, which can't fake a WebSocket handshake deterministically.
+    Regression: 5 new checks in /tmp/test_typing_presence_db.js, across
+    two genuinely separate browser contexts with no shared storage — an
+    isolated device shows the indicator purely from a real typing_status
+    heartbeat; clearing the draft deletes the real row and the indicator
+    disappears on the other device; and a real outsider cannot forge
+    another user's row (rejected by RLS). All 172 previously-existing
+    checks re-verified passing (177 total). This completes Phase 5 as
+    scoped by the migration blueprint.
   - PHASE 5 STEP 3 (of the migration blueprint): unread counts become real
     server state. Before this, "N new" badges were per-browser flags
     (THREADS[i].unreadPastor/unreadVisitor), bumped locally by whichever
@@ -6768,7 +6811,13 @@ function renderChat(){
   if(chatPollTimer) clearInterval(chatPollTimer);
   chatPollTimer = setInterval(function(){
     var live = threadById(activeThreadId);
-    if(live && live.id === t.id) pollNewChatMessages(t);
+    if(live && live.id === t.id){
+      pollNewChatMessages(t);
+      // PHASE 5 STEP 4: same tick, same thread — see pollTypingStatus()'s
+      // own dev note for why this rides along here instead of its own timer.
+      var acct = currentAccount();
+      if(acct) pollTypingStatus(live, acct);
+    }
   }, CHAT_POLL_MS);
 
   // Which side you are is a property of THIS thread, not of your account — see
@@ -8973,6 +9022,19 @@ function markTyping(threadId, role){
   var map = pruneTypingMap(readTypingMap(), now);
   map[typingKeyFor(threadId, role)] = now;
   STORE.set(TYPING_KEY, map);
+  // PHASE 5 STEP 4: also heartbeat a real row so a genuinely different
+  // device can see it — everything above is what makes typing feel instant
+  // for two tabs sharing one browser, but that's still just localStorage.
+  // Same throttle as the local write (this function already returned early
+  // above if it's too soon), so this is at most one request per TYPING_PING_MS,
+  // not one per keystroke.
+  var t = threadById(threadId);
+  var account = currentAccount();
+  if(t && t.dbId && account && account.supabaseId && supabaseClient){
+    supabaseClient.from('typing_status').upsert({
+      thread_id: t.dbId, user_id: account.supabaseId, updated_at: new Date().toISOString()
+    }).then(function(){}, function(){});
+  }
 }
 function clearTyping(threadId, role){
   if(!threadId) return;
@@ -8980,6 +9042,17 @@ function clearTyping(threadId, role){
   delete map[typingKeyFor(threadId, role)];
   lastTypingPing = 0;   // next keystroke should ping immediately, not wait out the throttle
   STORE.set(TYPING_KEY, pruneTypingMap(map, Date.now()));
+  // PHASE 5 STEP 4: clear the real row too, for the same instant-stop
+  // feeling the local clear already gives same-browser tabs — without
+  // this, a real other device would keep showing "typing…" for up to
+  // TYPING_TTL_MS after the row's last heartbeat, purely from staleness.
+  var t = threadById(threadId);
+  var account = currentAccount();
+  if(t && t.dbId && account && account.supabaseId && supabaseClient){
+    supabaseClient.from('typing_status').delete()
+      .eq('thread_id', t.dbId).eq('user_id', account.supabaseId)
+      .then(function(){}, function(){});
+  }
 }
 function myChatRole(){ return window.currentRole === 'pastor' ? 'pastor' : 'visitor'; }
 function otherSideTyping(threadId, myRole){
@@ -9001,6 +9074,34 @@ function refreshTypingUI(){
   }
 }
 setInterval(refreshTypingUI, TYPING_POLL_MS);
+
+// PHASE 5 STEP 4: the real-device half of typing presence. Checked on the
+// SAME cadence as pollNewChatMessages() — folded into the existing
+// CHAT_POLL_MS interval in renderChat() rather than a second timer of its
+// own — since a typing signal is only ever useful while the same thread
+// this poll already targets is open. When the other participant's real
+// typing_status row is fresher than TYPING_TTL_MS, this writes the exact
+// same local TYPING_KEY entry the same-browser mechanism already uses, so
+// refreshTypingUI()'s existing rendering needs no changes at all to pick
+// it up. Latency is bounded by CHAT_POLL_MS on top of the sender's own
+// TYPING_PING_MS heartbeat — visibly slower than the instant same-tab
+// case, an accepted trade-off for the same reason Step 1 chose a poll over
+// a realtime channel rather than mocking a WebSocket handshake.
+async function pollTypingStatus(t, account){
+  if(!t.dbId || !account || !account.supabaseId || !supabaseClient || !t.dbPastorId) return;
+  var myRole = account.supabaseId === t.dbPastorId ? 'pastor' : 'visitor';
+  var otherId = myRole === 'pastor' ? t.dbAttendeeId : t.dbPastorId;
+  if(!otherId) return;
+  var res = await supabaseClient.from('typing_status').select('updated_at')
+    .eq('thread_id', t.dbId).eq('user_id', otherId).maybeSingle();
+  if(res.error || !res.data) return;
+  var age = Date.now() - new Date(res.data.updated_at).getTime();
+  if(age >= TYPING_TTL_MS) return;
+  var otherRole = myRole === 'pastor' ? 'visitor' : 'pastor';
+  var map = pruneTypingMap(readTypingMap(), Date.now());
+  map[typingKeyFor(t.id, otherRole)] = Date.now();
+  STORE.set(TYPING_KEY, map);
+}
 
 // ---- AC-1 ----
 function renderAccount(){
