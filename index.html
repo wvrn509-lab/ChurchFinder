@@ -756,6 +756,44 @@
   implying reach it doesn't have. Keep that note if you restyle the page.
 
   ===== CHANGE LOG (most recent first) =====
+  - FIXED SILENT DATA LOSS WHEN localStorage IS FULL — this was the real
+    cause behind the "my edits aren't saving" report, and it had nothing to
+    do with the deploy (see the entry below, which guessed wrong). Every
+    test written until now started with empty storage, so nobody ever hit
+    it. The shape of the bug, in makeStore():
+      * set() caught the QuotaExceededError, stashed the value in `memory`,
+        and returned nothing — so callers saw a normal, successful call.
+      * raw() read back with `usable ? backing.getItem(key) : memory[key]`.
+        `usable` is decided ONCE at startup by a tiny probe write, so when
+        storage worked in general and only one big write blew the quota,
+        `usable` was still true and reads went straight to the backing
+        store, sailing right past the value just written.
+      The result: save a banner photo into a nearly-full store, see
+      "Saved.", and the edit is gone on the very next read — same session,
+      no reload, no error anywhere. The church editor even had a "storage
+      is full" message for exactly this, but it lived in a catch block the
+      store's own swallowed exception made unreachable.
+    Two rules keep it fixed, and both matter:
+      1. raw() checks `memory` FIRST. A key sitting there is newer than
+         whatever the backing store still holds, so the session stays
+         coherent even when nothing more can be persisted.
+      2. set() RETURNS whether the write was durable (true only when it
+         actually landed in the backing store; a successful write also
+         deletes any stale `memory` copy so the durable one is
+         authoritative again). saveAccounts/saveEvents/savePosts/
+         saveChurchProfiles/upsertAccount all propagate that boolean.
+    Callers that can lose real work now check it and say so instead of
+    lying: the church editor (banner and logo images are the only writes
+    big enough to fill a store) and the AC-1 profile photo save. Both show
+    a message naming the actual fix — remove the photo, or clear space —
+    rather than a success note that isn't true. If you add another write
+    that can carry an image, check the return value too; anything
+    text-sized can keep ignoring it.
+    Regression coverage: /tmp/test_storage_quota.js, 7 checks. Note the
+    filler in it packs 64KB then 8KB then 1KB chunks on purpose — an
+    earlier version left enough headroom that a small text-only write
+    still succeeded, which is correct behavior and made the test pass for
+    the wrong reason.
   - WORDING CONSISTENCY, per explicit request: LP-1's first gate button
     (still linking to TP-1) is now "Church Leader / Member" instead of
     "Church Member / Server". AU-1's sign-up role picker now reads "Church
@@ -6159,6 +6197,20 @@ var STORE_KEYS = { accounts:'cf.accounts.v2', session:'cf.session.v2', lastSessi
 // genuinely separate accounts at once, which is the only way to demo both sides
 // of a conversation live without a second device.
 function makeStore(backingName){
+  // Values that could NOT reach the real store — quota exceeded, private mode,
+  // storage disabled — are held here so the rest of the session still works.
+  //
+  // THE BUG THIS SHAPE EXISTS TO PREVENT (fixed; do not reintroduce): this used
+  // to write the failed value into `memory` but read it back with
+  // `usable ? getItem(key) : memory[key]`. When localStorage worked in general
+  // and only ONE write blew the quota, `usable` was still true, so reads went
+  // to localStorage and sailed straight past the value just written — the save
+  // vanished on the very next read, in the same session, with no error. And
+  // because set() swallowed the exception, callers had no way to know: the
+  // church editor's "storage is full" message was literally unreachable code.
+  // Two rules keep it fixed: raw() checks `memory` FIRST (a key in there is
+  // newer than whatever the backing store still holds), and set() RETURNS
+  // whether the write was durable.
   var memory = {};
   var usable = false;
   try {
@@ -6170,8 +6222,9 @@ function makeStore(backingName){
   return {
     persistent: usable,
     raw: function(key){
-      try { return usable ? window[backingName].getItem(key) : (memory[key] || null); }
-      catch(e){ return memory[key] || null; }
+      if(Object.prototype.hasOwnProperty.call(memory, key)) return memory[key];
+      try { return usable ? window[backingName].getItem(key) : null; }
+      catch(e){ return null; }
     },
     get: function(key, fallback){
       try {
@@ -6180,11 +6233,21 @@ function makeStore(backingName){
         return JSON.parse(raw);
       } catch(e){ return fallback; }
     },
+    // Returns true only when the value actually reached durable storage.
+    // A false means "you can carry on for now, but this is gone on reload" —
+    // any caller that can lose real work (a photo, a page edit) MUST check it
+    // and say so, rather than showing a success message that isn't true.
     set: function(key, value){
       var raw = JSON.stringify(value);
-      try {
-        if(usable) window[backingName].setItem(key, raw); else memory[key] = raw;
-      } catch(e){ memory[key] = raw; }
+      if(usable){
+        try {
+          window[backingName].setItem(key, raw);
+          delete memory[key];   // the durable copy is authoritative again
+          return true;
+        } catch(e){ /* quota or similar — fall through to the memory copy */ }
+      }
+      memory[key] = raw;
+      return false;
     },
     remove: function(key){
       try { if(usable) window[backingName].removeItem(key); } catch(e){}
@@ -6250,7 +6313,8 @@ function loadAccounts(){
   if(changed) STORE.set(STORE_KEYS.accounts, list);
   return list;
 }
-function saveAccounts(list){ STORE.set(STORE_KEYS.accounts, list); }
+// Returns false when the write didn't reach durable storage — see STORE.set.
+function saveAccounts(list){ return STORE.set(STORE_KEYS.accounts, list); }
 function normalizeEmail(email){ return String(email || '').trim().toLowerCase(); }
 function findAccount(email){
   var target = normalizeEmail(email);
@@ -6261,7 +6325,7 @@ function upsertAccount(account){
   var idx = -1;
   for(var i=0;i<list.length;i++){ if(list[i].email === account.email){ idx = i; break; } }
   if(idx === -1) list.push(account); else list[idx] = account;
-  saveAccounts(list);
+  return saveAccounts(list);
 }
 // The signed-in email FOR THIS TAB. A freshly opened tab has no session of its
 // own, so it adopts the most recent sign-in — that keeps "open the file again"
@@ -7464,9 +7528,9 @@ function wireChurchPicker(rootEl, opts){
 // own detail page (see showDetail()'s EVENTS & POSTS section); there's no
 // separate global feed yet.
 function loadEvents(){ return STORE.get(STORE_KEYS.events, []); }
-function saveEvents(list){ STORE.set(STORE_KEYS.events, list); }
+function saveEvents(list){ return STORE.set(STORE_KEYS.events, list); }
 function loadPosts(){ return STORE.get(STORE_KEYS.posts, []); }
-function savePosts(list){ STORE.set(STORE_KEYS.posts, list); }
+function savePosts(list){ return STORE.set(STORE_KEYS.posts, list); }
 
 function isEventPast(ev){ return !!ev && Date.parse(ev.date) < Date.now(); }
 function eventsForChurch(churchId){
@@ -7500,7 +7564,7 @@ function findEvent(id){ return loadEvents().filter(function(e){ return e.id === 
 // themselves in terms of denomination — letting a pastor pick purple would
 // make both of them lie. accent themes the church's own PAGE only.
 function loadChurchProfiles(){ return STORE.get(STORE_KEYS.churchProfiles, {}); }
-function saveChurchProfiles(map){ STORE.set(STORE_KEYS.churchProfiles, map); }
+function saveChurchProfiles(map){ return STORE.set(STORE_KEYS.churchProfiles, map); }
 function churchProfileFor(churchId){
   if(!churchId) return {};
   return loadChurchProfiles()[churchId] || {};
@@ -7690,7 +7754,14 @@ function wireProfileEditor(account){
     account.name = name;
     account.bio = bio.trim();
     if(profileDraft.photo !== undefined) account.photo = profileDraft.photo;
-    upsertAccount(account);
+    // A profile photo is the other write big enough to fill storage — same
+    // rule as the church editor: never claim a save that didn't persist.
+    if(!upsertAccount(account)){
+      profileDraft.bio = bio;
+      profileDraft.note = 'Couldn’t save — this browser’s storage is full. Try removing your photo, or use Reset all local data below to clear space.';
+      profileDraft.noteClass = 'error';
+      renderAccount(); return;
+    }
     resetProfileDraft();
     renderAccount();
     // No renderAcctPill() here on purpose: the pill is hidden on AC-1 anyway
@@ -8423,11 +8494,13 @@ function renderEditChurch(){
     if(Object.keys(prof).length <= 2) delete map[churchId];  // nothing but the stamps left
     else map[churchId] = prof;
 
-    try{
-      saveChurchProfiles(map);
-    }catch(e){
-      // Images are the only thing here big enough to blow the storage quota.
-      churchEditNote = 'Couldn’t save — this browser’s storage is full. Try a smaller banner photo.';
+    // saveChurchProfiles() returns false when the write didn't reach durable
+    // storage — banner and logo images are the only things here big enough to
+    // fill it. This used to be a try/catch, which never fired because the
+    // store swallowed the exception: the page reported "Saved" and the edit
+    // was gone on reload. See the makeStore() dev note.
+    if(!saveChurchProfiles(map)){
+      churchEditNote = 'Couldn’t save — this browser’s storage is full. Remove the banner photo, or clear space from your account page, then save again.';
       churchEditNoteClass = 'error';
       renderEditChurch();
       return;
