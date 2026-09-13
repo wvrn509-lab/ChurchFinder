@@ -7125,6 +7125,10 @@ function makeStore(backingName){
 }
 var STORE = makeStore('localStorage');          // shared: accounts, threads
 var TAB_STORE = makeStore('sessionStorage');    // per tab: the session
+// DEBUG: log if storage is actually available on iOS
+if(!STORE.persistent || !TAB_STORE.persistent){
+  console.warn('⚠️ Storage not fully available. Accounts may not persist. localStorage.persistent:', STORE.persistent, 'sessionStorage.persistent:', TAB_STORE.persistent);
+}
 
 var authMode = 'signin';        // 'signin' | 'signup' — which AU-1 tab is showing
 var authFlashNote = null;       // one-time success message for AU-1's #auNote (e.g. after a password reset), cleared once shown
