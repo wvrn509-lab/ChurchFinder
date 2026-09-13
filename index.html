@@ -10085,6 +10085,11 @@ function renderAdmin(){
         '<p class="auth-hint" style="margin:0 0 12px;">Everyone who has signed up in this browser — role, church, verification state and profile.</p>'+
         '<button class="account-btn primary" id="adViewAccounts">View accounts (' + loadAccounts().length + ') &rarr;</button>'+
       '</div>'+
+      '<div class="account-card">'+
+        '<p class="auth-hint" style="margin:0 0 8px;"><strong style="color:#C7CCDA;">Reset everything</strong></p>'+
+        '<p class="auth-hint" style="margin:0 0 10px;">Wipe all accounts, conversations, messages, and sign-ins stored in this browser.</p>'+
+        '<button class="account-btn danger" id="adReset">Reset all local data</button>'+
+      '</div>'+
       '<button class="auth-submit" id="adSignOut">Sign out of admin</button>';
     document.getElementById('adTestEmailSave').addEventListener('click', function(){
       var val = document.getElementById('adTestEmail').value.trim();
@@ -10095,6 +10100,12 @@ function renderAdmin(){
     });
     document.getElementById('adViewAccounts').addEventListener('click', function(){
       location.hash = 'admin-accounts';
+    });
+    document.getElementById('adReset').addEventListener('click', function(){
+      if(!window.confirm('Erase every account, conversation and sign-in stored in this browser?')) return;
+      Object.keys(STORE_KEYS).forEach(function(k){ STORE.remove(STORE_KEYS[k]); TAB_STORE.remove(STORE_KEYS[k]); });
+      window.location.hash = '';
+      window.location.reload();
     });
     document.getElementById('adSignOut').addEventListener('click', function(){
       setAdminMode(false);
