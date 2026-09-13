@@ -8368,15 +8368,15 @@ async function uploadImageToStorage(blob, path){
   if(!supabaseClient) return { error: 'Image storage isn’t available right now.' };
   try {
     // Ask for the session BEFORE uploading, not just when something fails.
-    // getSession() auto-refreshes an expired-but-refreshable access token
-    // using the stored refresh token — a session that *looks* fine
+    // refreshSession() swaps an expired-but-refreshable access token for a
+    // fresh one using the stored refresh token — a session that *looks* fine
     // client-side (has a user id) can still carry an expired JWT that
     // Postgres treats as unauthenticated, which fails RLS with the exact
     // generic "violates row-level security policy" error and no hint that
     // the token, not the account, was the problem. Calling this first means
     // the actual upload call below runs with a token already confirmed
     // fresh, rather than finding out it was stale only after the rejection.
-    var preSession = await supabaseClient.auth.getSession();
+    var preSession = await supabaseClient.auth.refreshSession();
     var sessionUser = preSession.data && preSession.data.session && preSession.data.session.user;
     var expiresAt = preSession.data && preSession.data.session && preSession.data.session.expires_at;
     if(!sessionUser){
