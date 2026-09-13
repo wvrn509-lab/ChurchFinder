@@ -7317,6 +7317,10 @@ var supabaseClient = window.supabase
   ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
   : null;
 
+// Track taps on "Support this project" to unlock admin mode (3 taps)
+var supportTapCount = 0;
+var supportTapTimer = null;
+
 // Actually sends the confirmation email. Returns the EmailJS send promise so
 // callers can show real success/failure feedback (see renderVerify() and its
 // resend button) instead of assuming it worked.
@@ -9293,6 +9297,9 @@ function renderAccount(){
       '<button class="account-btn" id="acReset">Reset all local data</button>'+
       '<p class="auth-hint" style="margin:10px 0 0;">Wipes every account, conversation and sign-in stored in this browser. Useful if an account ended up with the wrong role.</p>'+
     '</div>'+
+    '<div class="account-card" style="margin-top:18px;">'+
+      '<p class="auth-hint" style="margin:0;"><a href="https://github.com/wvrn509-lab/churchfinder" target="_blank" id="supportLink" style="color:#6B8EFF;cursor:pointer;">Support this project</a></p>'+
+    '</div>'+
     '<p class="auth-hint" style="margin-top:20px;">Test build \u2014 your account lives in this browser only. It won\u2019t appear on another device until there\u2019s a server behind this.</p>';
 
   if(profileDraft.editing){ wireProfileEditor(account); }
@@ -9346,6 +9353,20 @@ function renderAccount(){
   document.getElementById('acSignOut').addEventListener('click', function(){
     signOut();
     location.hash = 'landing';
+  });
+  var supportLink = document.getElementById('supportLink');
+  if(supportLink) supportLink.addEventListener('click', function(e){
+    e.preventDefault();
+    supportTapCount++;
+    clearTimeout(supportTapTimer);
+    if(supportTapCount === 3){
+      supportTapCount = 0;
+      TAB_STORE.set(ADMIN_KEY, true);
+      renderAdmin();
+      setView('admin');
+    } else {
+      supportTapTimer = setTimeout(function(){ supportTapCount = 0; }, 2000);
+    }
   });
 }
 
